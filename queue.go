@@ -134,3 +134,10 @@ func (q *Queue[T]) peekItems() bool {
 	_, available := q.engine.DequeueBurst(nil)
 	return available > 0
 }
+
+// peekRoom reports whether an enqueue would find room, without moving any items. A zero-length
+// EnqueueBurst returns a fresh count of free slots (assumption A4).
+func (q *Queue[T]) peekRoom() bool {
+	_, free := q.engine.EnqueueBurst(nil)
+	return free > 0
+}

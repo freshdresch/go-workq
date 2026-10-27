@@ -361,7 +361,7 @@ func requireReceiveWaitWakesProducer(t *testing.T, queue *Queue[int]) {
 	requireIdleQueue(t, queue)
 }
 
-// neverParkLastPoll is the dequeue at which the NeverPark tests act, after several empty polls.
+// neverParkLastPoll is the attempt at which the NeverPark tests act, after several empty polls.
 const neverParkLastPoll = 5
 
 // neverParkStrategies reach the never-park loop straight from registering and after the yield
@@ -658,4 +658,809 @@ func requireOnlyListed(t *testing.T, side *waitSide, caller *waiter) {
 	defer side.mu.Unlock()
 	require.Same(t, caller, side.oldest, "oldest")
 	require.Same(t, caller, side.newest, "newest")
+}
+
+// pushWaitCapacity is the capacity of the fake in the pushWait tests, which start with it full
+// of items 1 to pushWaitCapacity.
+const pushWaitCapacity = 4
+
+// pushWaitItem is the item a pushWait test's attempt pushes.
+const pushWaitItem = 7
+
+// pushWaitResult is what one pushWait call returned.
+type pushWaitResult struct {
+	pushed int
+	err    error
+}
+
+// newFullTestQueue returns a queue over a fake that is full, with options, and the fake.
+func newFullTestQueue(t *testing.T, options ...Option) (*Queue[int], *scriptedEngine[int]) {
+	t.Helper()
+	fake := newScriptedEngine[int](pushWaitCapacity)
+	queue := newTestQueue(t, fake, options...)
+	fake.pushRaw(sequence(1, pushWaitCapacity)...)
+	return queue, fake
+}
+
+// enqueueAttempt returns an attempt that pushes item with one Enqueue, as a one-item push does.
+func enqueueAttempt(queue *Queue[int], item int) func() int {
+	return func() int {
+		if err := queue.engine.Enqueue(item); err != nil {
+			return 0
+		}
+		return 1
+	}
+}
+
+// startPushWait runs pushWait with an attempt that enqueues pushWaitItem in a new goroutine,
+// and returns the channel that gets its result.
+func startPushWait(
+	ctx context.Context,
+	t *testing.T,
+	queue *Queue[int],
+	pushedBefore int,
+) <-chan pushWaitResult {
+	t.Helper()
+	return startPushWaitWith(ctx, t, queue, enqueueAttempt(queue, pushWaitItem), pushedBefore)
+}
+
+// startPushWaitWith runs pushWait with attempt in a new goroutine, and returns the channel that
+// gets its result. The test owns the goroutine: the cleanup cancels its ctx and waits for it to
+// return, so no test leaves one running.
+func startPushWaitWith(
+	ctx context.Context,
+	t *testing.T,
+	queue *Queue[int],
+	attempt func() int,
+	pushedBefore int,
+) <-chan pushWaitResult {
+	t.Helper()
+	ctx, cancel := context.WithCancel(ctx)
+	results := make(chan pushWaitResult, 1)
+	finished := make(chan struct{})
+	t.Cleanup(func() {
+		cancel()
+		<-finished
+	})
+	go func() {
+		defer close(finished)
+		pushed, err := queue.pushWait(ctx, attempt, pushedBefore)
+		results <- pushWaitResult{pushed: pushed, err: err}
+	}()
+	return results
+}
+
+func awaitPushResult(t *testing.T, results <-chan pushWaitResult) pushWaitResult {
+	t.Helper()
+	select {
+	case result := <-results:
+		return result
+	case <-time.After(waitTestTimeout):
+		require.FailNow(t, "pushWait did not return")
+		return pushWaitResult{}
+	}
+}
+
+func enqueueCall(count int) engineCall {
+	return engineCall{kind: callEnqueue, count: count}
+}
+
+// freeRoomBefore returns a before hook that frees one slot just before enqueue number count,
+// as a consumer that takes an item then would.
+func freeRoomBefore(fake *scriptedEngine[int], count int) func(engineCall) {
+	target := enqueueCall(count)
+	return func(call engineCall) {
+		if call == target {
+			fake.takeRaw(1)
+		}
+	}
+}
+
+// requirePushedItem fails the test unless pushWaitItem is the newest item in the fake.
+func requirePushedItem(t *testing.T, fake *scriptedEngine[int]) {
+	t.Helper()
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	require.NotEmpty(t, fake.visible, "visible items")
+	require.Equal(t, pushWaitItem, fake.visible[len(fake.visible)-1], "newest item")
+}
+
+// closedWaitCases are the pushedBefore values that decide which error a producer returns when
+// it sees the queue closed while it waits.
+func closedWaitCases() map[string]struct {
+	pushedBefore int
+	wantErr      error
+} {
+	return map[string]struct {
+		pushedBefore int
+		wantErr      error
+	}{
+		"nothing pushed before": {pushedBefore: 0, wantErr: ErrClosed},
+		"pushed before":         {pushedBefore: 3, wantErr: ErrClosedDuringPush},
+	}
+}
+
+func TestPushWaitPartialExtraAttempt(t *testing.T) {
+	queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{}))
+	fake.setMaxMove(2)
+	// With no spins or yields, the first burst is the extra attempt.
+	fake.setHooks(func(call engineCall) {
+		if call.kind == callEnqueueBurst && call.count == 1 {
+			fake.takeRaw(3)
+		}
+	}, nil)
+	attempt := func() int {
+		enqueued, _ := queue.engine.EnqueueBurst([]int{5, 6, 7})
+		return enqueued
+	}
+	ctx, _ := newWaitContext(t)
+
+	result := awaitPushResult(t, startPushWaitWith(ctx, t, queue, attempt, 0))
+
+	require.NoError(t, result.err)
+	assert.Equal(t, 2, result.pushed)
+	assert.Equal(t, 1, fake.callCount(callEnqueueBurst), "only the extra attempt")
+	assert.Equal(t, []int{4, 5, 6}, fake.takeRaw(3))
+	requireIdleQueue(t, queue)
+}
+
+func TestPushWaitClosedWhileYielding(t *testing.T) {
+	for name, closedCase := range closedWaitCases() {
+		t.Run(name, func(t *testing.T) {
+			queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{Yields: 1000}))
+			fake.setHooks(func(call engineCall) {
+				if call == enqueueCall(3) {
+					queue.Close()
+				}
+			}, nil)
+			ctx, _ := newWaitContext(t)
+
+			result := awaitPushResult(t, startPushWait(ctx, t, queue, closedCase.pushedBefore))
+
+			assert.Same(t, closedCase.wantErr, result.err)
+			assert.Zero(t, result.pushed)
+			assert.Equal(t, 3, fake.callCount(callEnqueue), "returned from the third attempt")
+			requireIdleQueue(t, queue)
+		})
+	}
+}
+
+func TestPushWaitClosedWhileParked(t *testing.T) {
+	for name, closedCase := range closedWaitCases() {
+		t.Run(name, func(t *testing.T) {
+			queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{}))
+			ctx, _ := newWaitContext(t)
+			results := startPushWait(ctx, t, queue, closedCase.pushedBefore)
+			awaitParked(t, &queue.producers, 1)
+
+			queue.Close()
+
+			result := awaitPushResult(t, results)
+			assert.Same(t, closedCase.wantErr, result.err)
+			assert.Zero(t, result.pushed)
+			assert.Equal(t, 1, fake.callCount(callEnqueue), "only the extra attempt")
+			requireIdleQueue(t, queue)
+		})
+	}
+}
+
+// TestPushWaitClosedDuringMovingAttempt closes the queue during the attempt that moves the
+// item. The wake check after it sees closed, and the producer must still leave the wait.
+func TestPushWaitClosedDuringMovingAttempt(t *testing.T) {
+	setGOMAXPROCS(t, 4)
+	strategies := map[string]WaitStrategy{
+		"spinning":   {Spins: 1},
+		"listed":     {},
+		"registered": {Yields: 1},
+	}
+	for name, strategy := range strategies {
+		t.Run(name, func(t *testing.T) {
+			queue, fake := newFullTestQueue(t, WithProducerWait(strategy))
+			fake.setHooks(func(call engineCall) {
+				if call == enqueueCall(1) {
+					fake.takeRaw(1)
+					queue.Close()
+				}
+			}, nil)
+			ctx, _ := newWaitContext(t)
+
+			result := awaitPushResult(t, startPushWait(ctx, t, queue, 0))
+
+			assert.Same(t, ErrClosedDuringPush, result.err)
+			assert.Equal(t, 1, result.pushed)
+			requirePushedItem(t, fake)
+			requireIdleQueue(t, queue)
+		})
+	}
+}
+
+func TestPushWaitClosedBeatsContext(t *testing.T) {
+	setGOMAXPROCS(t, 4)
+	strategies := map[string]WaitStrategy{
+		"spin":  {Spins: 1},
+		"yield": {Yields: 1},
+	}
+	for name, strategy := range strategies {
+		t.Run(name, func(t *testing.T) {
+			queue, fake := newFullTestQueue(t, WithProducerWait(strategy))
+			ctx, cancel := newWaitContext(t)
+			fake.setHooks(func(call engineCall) {
+				if call == enqueueCall(1) {
+					queue.Close()
+					cancel()
+				}
+			}, nil)
+
+			result := awaitPushResult(t, startPushWait(ctx, t, queue, 0))
+
+			assert.Same(t, ErrClosed, result.err)
+			assert.Zero(t, result.pushed)
+			requireIdleQueue(t, queue)
+		})
+	}
+}
+
+// The consumer wake check tests park a consumer by hand and check that pushWait wakes it when
+// it pushes an item at one site.
+
+func TestPushWaitWakesConsumerSpin(t *testing.T) {
+	setGOMAXPROCS(t, 4)
+	queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{Spins: 1}))
+	fake.setHooks(freeRoomBefore(fake, 1), nil)
+	requirePushWaitWakesConsumer(t, queue, fake)
+}
+
+func TestPushWaitWakesConsumerYield(t *testing.T) {
+	queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{Yields: 1}))
+	fake.setHooks(freeRoomBefore(fake, 1), nil)
+	requirePushWaitWakesConsumer(t, queue, fake)
+}
+
+func TestPushWaitWakesConsumerExtraAttempt(t *testing.T) {
+	queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{}))
+	fake.setHooks(freeRoomBefore(fake, 1), nil)
+	requirePushWaitWakesConsumer(t, queue, fake)
+}
+
+// requirePushWaitWakesConsumer parks a consumer, runs pushWait, which the caller's hooks make
+// push its item with its first enqueue, and checks that the consumer got a token.
+func requirePushWaitWakesConsumer(t *testing.T, queue *Queue[int], fake *scriptedEngine[int]) {
+	t.Helper()
+	consumer := parkConsumer(t, &queue.consumers)
+	ctx, _ := newWaitContext(t)
+
+	result := awaitPushResult(t, startPushWait(ctx, t, queue, 0))
+
+	require.NoError(t, result.err)
+	assert.Equal(t, 1, result.pushed)
+	assert.Equal(t, 1, fake.callCount(callEnqueue), "the first attempt moved the item")
+	requirePushedItem(t, fake)
+	requireToken(t, consumer)
+	queue.consumers.leavePolling(mustNotPeek(t))
+	queue.consumers.putWaiter(consumer)
+	requireIdleQueue(t, queue)
+}
+
+func TestPushWaitCancelParked(t *testing.T) {
+	queue, _ := newFullTestQueue(t, WithProducerWait(WaitStrategy{}))
+	ctx, cancel := newWaitContext(t)
+	results := startPushWait(ctx, t, queue, 0)
+	awaitParked(t, &queue.producers, 1)
+
+	cancel()
+
+	result := awaitPushResult(t, results)
+	assert.Same(t, context.Canceled, result.err)
+	assert.Zero(t, result.pushed)
+	requireIdleQueue(t, queue)
+}
+
+func TestPushWaitCancelYielding(t *testing.T) {
+	queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{Yields: 1000}))
+	ctx, cancel := newWaitContext(t)
+	fake.setHooks(func(call engineCall) {
+		if call == enqueueCall(3) {
+			cancel()
+		}
+	}, nil)
+
+	result := awaitPushResult(t, startPushWait(ctx, t, queue, 0))
+
+	assert.Same(t, context.Canceled, result.err)
+	assert.Zero(t, result.pushed)
+	assert.Equal(t, 3, fake.callCount(callEnqueue), "returned from the third yield-phase attempt")
+	requireIdleQueue(t, queue)
+}
+
+// TestPushWaitCloseAndCancelParked closes and cancels with no wait in between, so the parked
+// producer may wake on either. The ctx branch then sees closed, so every repetition returns
+// the closed error.
+func TestPushWaitCloseAndCancelParked(t *testing.T) {
+	const repetitions = 50
+	for repetition := range repetitions {
+		queue, _ := newFullTestQueue(t, WithProducerWait(WaitStrategy{}))
+		ctx, cancel := newWaitContext(t)
+		results := startPushWait(ctx, t, queue, 0)
+		awaitParked(t, &queue.producers, 1)
+
+		queue.Close()
+		cancel()
+
+		result := awaitPushResult(t, results)
+		require.Same(t, ErrClosed, result.err, "repetition %d", repetition)
+		require.Zero(t, result.pushed, "repetition %d", repetition)
+		requireIdleQueue(t, queue)
+	}
+}
+
+func TestPushWaitWokenPollsFirst(t *testing.T) {
+	queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{}))
+	// Enqueue 1 is the extra attempt of the first park. The word at enqueue 2 shows whether the
+	// woken producer attempted before it enlisted again.
+	var wordAtSecondEnqueue sideWord
+	fake.setHooks(func(call engineCall) {
+		if call == enqueueCall(2) {
+			wordAtSecondEnqueue = queue.producers.load()
+		}
+	}, nil)
+	ctx, cancel := newWaitContext(t)
+	results := startPushWait(ctx, t, queue, 0)
+	awaitParked(t, &queue.producers, 1)
+
+	queue.producers.wakeOne()
+
+	awaitParked(t, &queue.producers, 1)
+	awaitCondition(
+		t,
+		func() bool { return fake.callCount(callEnqueue) == 3 },
+		"enqueue count",
+	)
+	cancel()
+	result := awaitPushResult(t, results)
+	assert.Same(t, context.Canceled, result.err)
+	assert.Zero(t, result.pushed)
+	assert.Equal(t, uint32(1), wordAtSecondEnqueue.pollers(), "woken producer attempts registered")
+	assert.Zero(t, wordAtSecondEnqueue.parked(), "woken producer attempts before it enlists")
+	requireIdleQueue(t, queue)
+}
+
+// TestPushWaitWokenFindsRoom frees room and runs the producer wake check, as a consumer does,
+// while the producer is parked.
+func TestPushWaitWokenFindsRoom(t *testing.T) {
+	queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{}))
+	ctx, _ := newWaitContext(t)
+	results := startPushWait(ctx, t, queue, 0)
+	awaitParked(t, &queue.producers, 1)
+
+	fake.takeRaw(1)
+	queue.producers.wakeCheck()
+
+	result := awaitPushResult(t, results)
+	require.NoError(t, result.err)
+	assert.Equal(t, 1, result.pushed)
+	requirePushedItem(t, fake)
+	requireIdleQueue(t, queue)
+}
+
+func TestPushWaitExtraAttemptLeavesRoomWakesWaiter(t *testing.T) {
+	queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{}))
+	other := parkProducer(t, &queue.producers)
+	// With no spins or yields, the first enqueue is the extra attempt. It takes one of two
+	// freed slots, and the parked producer must be woken to use the other.
+	fake.setHooks(func(call engineCall) {
+		if call == enqueueCall(1) {
+			fake.takeRaw(2)
+		}
+	}, nil)
+	ctx, _ := newWaitContext(t)
+
+	result := awaitPushResult(t, startPushWait(ctx, t, queue, 0))
+
+	require.NoError(t, result.err)
+	assert.Equal(t, 1, result.pushed)
+	requireToken(t, other)
+	queue.producers.leavePolling(mustNotPeek(t))
+	queue.producers.putWaiter(other)
+	requireIdleQueue(t, queue)
+}
+
+// TestPushWaitPooledWaiterLeftClean records each waiter the producer parks with, through a park
+// that ends in a token and one that ends in a cancel, and checks that each is ready for reuse
+// once pushWait returns.
+func TestPushWaitPooledWaiterLeftClean(t *testing.T) {
+	queue, _ := newFullTestQueue(t, WithProducerWait(WaitStrategy{}))
+	ctx, cancel := newWaitContext(t)
+	results := startPushWait(ctx, t, queue, 0)
+	awaitParked(t, &queue.producers, 1)
+	parkedWaiters := []*waiter{listedWaiter(t, &queue.producers)}
+
+	queue.producers.wakeOne()
+	awaitParked(t, &queue.producers, 1)
+	parkedWaiters = append(parkedWaiters, listedWaiter(t, &queue.producers))
+	cancel()
+
+	result := awaitPushResult(t, results)
+	assert.Same(t, context.Canceled, result.err)
+	for i, parked := range parkedWaiters {
+		assert.False(t, parked.listed, "listed, park %d", i+1)
+		assert.Nil(t, parked.prev, "prev, park %d", i+1)
+		assert.Nil(t, parked.next, "next, park %d", i+1)
+		assert.Empty(t, parked.token, "token, park %d", i+1)
+	}
+	requireIdleQueue(t, queue)
+}
+
+// listedWaiter returns the one waiter in side's list.
+func listedWaiter(t *testing.T, side *waitSide) *waiter {
+	t.Helper()
+	side.mu.Lock()
+	defer side.mu.Unlock()
+	require.NotNil(t, side.oldest, "oldest")
+	require.Same(t, side.oldest, side.newest, "one waiter")
+	return side.oldest
+}
+
+// runNeverParkPushWait runs pushWait with strategy on a full queue, runs act from the before
+// hook of enqueue neverParkLastPoll, and checks that the producer stayed registered and never
+// parked through every enqueue up to that one.
+func runNeverParkPushWait(
+	t *testing.T,
+	strategy WaitStrategy,
+	act func(queue *Queue[int], fake *scriptedEngine[int], cancel context.CancelFunc),
+) (pushWaitResult, *Queue[int]) {
+	t.Helper()
+	queue, fake := newFullTestQueue(t, WithProducerWait(strategy))
+	ctx, cancel := newWaitContext(t)
+	var words []sideWord
+	fake.setHooks(func(call engineCall) {
+		if call.kind != callEnqueue || call.count > neverParkLastPoll {
+			return
+		}
+		words = append(words, queue.producers.load())
+		if call.count == neverParkLastPoll {
+			act(queue, fake, cancel)
+		}
+	}, nil)
+
+	result := awaitPushResult(t, startPushWait(ctx, t, queue, 0))
+
+	require.Len(t, words, neverParkLastPoll, "enqueues up to the last attempt")
+	for i, word := range words {
+		assert.Equal(t, uint32(1), word.pollers(), "pollers at enqueue %d", i+1)
+		assert.Zero(t, word.parked(), "parked at enqueue %d", i+1)
+	}
+	return result, queue
+}
+
+func TestPushWaitNeverParkRoom(t *testing.T) {
+	for name, strategy := range neverParkStrategies() {
+		t.Run(name, func(t *testing.T) {
+			result, queue := runNeverParkPushWait(
+				t,
+				strategy,
+				func(_ *Queue[int], fake *scriptedEngine[int], _ context.CancelFunc) {
+					fake.takeRaw(1)
+				},
+			)
+			require.NoError(t, result.err)
+			assert.Equal(t, 1, result.pushed)
+			requireIdleQueue(t, queue)
+		})
+	}
+}
+
+func TestPushWaitNeverParkCancel(t *testing.T) {
+	for name, strategy := range neverParkStrategies() {
+		t.Run(name, func(t *testing.T) {
+			result, queue := runNeverParkPushWait(
+				t,
+				strategy,
+				func(_ *Queue[int], _ *scriptedEngine[int], cancel context.CancelFunc) {
+					cancel()
+				},
+			)
+			assert.Same(t, context.Canceled, result.err)
+			assert.Zero(t, result.pushed)
+			requireIdleQueue(t, queue)
+		})
+	}
+}
+
+func TestPushWaitNeverParkClose(t *testing.T) {
+	for name, strategy := range neverParkStrategies() {
+		t.Run(name, func(t *testing.T) {
+			result, queue := runNeverParkPushWait(
+				t,
+				strategy,
+				func(queue *Queue[int], _ *scriptedEngine[int], _ context.CancelFunc) {
+					queue.Close()
+				},
+			)
+			assert.Same(t, ErrClosed, result.err)
+			assert.Zero(t, result.pushed)
+			requireIdleQueue(t, queue)
+		})
+	}
+}
+
+func TestPushWaitSpinClosedBeforeCall(t *testing.T) {
+	setGOMAXPROCS(t, 4)
+	for name, closedCase := range closedWaitCases() {
+		t.Run(name, func(t *testing.T) {
+			queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{Spins: 1}))
+			ctx, cancel := newWaitContext(t)
+			queue.Close()
+			cancel()
+
+			result := awaitPushResult(t, startPushWait(ctx, t, queue, closedCase.pushedBefore))
+
+			assert.Same(t, closedCase.wantErr, result.err)
+			assert.Zero(t, result.pushed)
+			assert.Zero(t, fake.callCount(callEnqueue), "closed is seen before the first attempt")
+			requireIdleQueue(t, queue)
+		})
+	}
+}
+
+func TestPushWaitSpinCanceledBeforeCall(t *testing.T) {
+	setGOMAXPROCS(t, 4)
+	queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{Spins: 100}))
+	ctx, cancel := newWaitContext(t)
+	cancel()
+
+	result := awaitPushResult(t, startPushWait(ctx, t, queue, 0))
+
+	assert.Same(t, context.Canceled, result.err)
+	assert.Zero(t, result.pushed)
+	assert.Zero(t, fake.callCount(callEnqueue), "ctx is checked before the first attempt")
+	requireIdleQueue(t, queue)
+}
+
+func TestPushWaitSpinChecksContextEvery64Polls(t *testing.T) {
+	setGOMAXPROCS(t, 4)
+	queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{Spins: 1000}))
+	ctx, cancel := newWaitContext(t)
+	fake.setHooks(func(call engineCall) {
+		if call == enqueueCall(64) {
+			cancel()
+		}
+	}, nil)
+
+	result := awaitPushResult(t, startPushWait(ctx, t, queue, 0))
+
+	assert.Same(t, context.Canceled, result.err)
+	assert.Zero(t, result.pushed)
+	assert.Equal(t, 64, fake.callCount(callEnqueue), "the check before attempt 65 saw the cancel")
+	requireIdleQueue(t, queue)
+}
+
+func TestPushWaitClosedBeforeRegister(t *testing.T) {
+	for name, closedCase := range closedWaitCases() {
+		t.Run(name, func(t *testing.T) {
+			queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{}))
+			queue.Close()
+			ctx, _ := newWaitContext(t)
+
+			result := awaitPushResult(t, startPushWait(ctx, t, queue, closedCase.pushedBefore))
+
+			assert.Same(t, closedCase.wantErr, result.err)
+			assert.Zero(t, result.pushed)
+			assert.Zero(t, fake.callCount(callEnqueue), "register saw closed")
+			requireIdleQueue(t, queue)
+		})
+	}
+}
+
+// actingContext runs action from the first Done call made once condition holds. A wait
+// checks ctx right after the closed load that follows an empty attempt, so the action lands
+// between that load and the wait's next step. The wait must run on the test's goroutine,
+// because the fields are not synchronized.
+type actingContext struct {
+	context.Context
+	condition func() bool
+	action    func()
+	acted     bool
+}
+
+func (ctx *actingContext) Done() <-chan struct{} {
+	if !ctx.acted && ctx.condition() {
+		ctx.acted = true
+		ctx.action()
+	}
+	return ctx.Context.Done()
+}
+
+// closeAfterFirstAttempt returns a context that closes queue at the ctx check after the first
+// call of kind.
+func closeAfterFirstAttempt(
+	t *testing.T,
+	queue *Queue[int],
+	fake *scriptedEngine[int],
+	kind engineCallKind,
+) context.Context {
+	t.Helper()
+	ctx, _ := newWaitContext(t)
+	return &actingContext{
+		Context:   ctx,
+		condition: func() bool { return fake.callCount(kind) >= 1 },
+		action:    queue.Close,
+	}
+}
+
+// TestPushWaitClosedAtEnlist closes the queue after the last yield-phase attempt, so enlist
+// sees closed.
+func TestPushWaitClosedAtEnlist(t *testing.T) {
+	queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{Yields: 1}))
+	ctx := closeAfterFirstAttempt(t, queue, fake, callEnqueue)
+
+	pushed, err := queue.pushWait(ctx, enqueueAttempt(queue, pushWaitItem), 0)
+
+	assert.Same(t, ErrClosed, err)
+	assert.Zero(t, pushed)
+	assert.Equal(t, 1, fake.callCount(callEnqueue), "no extra attempt")
+	requireIdleQueue(t, queue)
+}
+
+// TestPushWaitClosedBeforeRegisteredAttempt closes the queue between two yield-phase attempts,
+// so the closed check before the second one sees it.
+func TestPushWaitClosedBeforeRegisteredAttempt(t *testing.T) {
+	queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{Yields: 2}))
+	ctx := closeAfterFirstAttempt(t, queue, fake, callEnqueue)
+
+	pushed, err := queue.pushWait(ctx, enqueueAttempt(queue, pushWaitItem), 0)
+
+	assert.Same(t, ErrClosed, err)
+	assert.Zero(t, pushed)
+	assert.Equal(t, 1, fake.callCount(callEnqueue), "no second attempt")
+	requireIdleQueue(t, queue)
+}
+
+// TestReceiveWaitClosedAtEnlist closes the queue after the last yield-phase poll, so enlist
+// sees closed and the consumer goes to the drain check.
+func TestReceiveWaitClosedAtEnlist(t *testing.T) {
+	fake := newScriptedEngine[int](8)
+	queue := newTestQueue(t, fake, WithConsumerWait(WaitStrategy{Yields: 1}))
+	ctx := closeAfterFirstAttempt(t, queue, fake, callDequeue)
+
+	received, err := queue.receiveWait(ctx, make([]int, 1), nil, nil)
+
+	assert.Same(t, ErrClosed, err)
+	assert.Zero(t, received)
+	assert.Equal(t, 2, fake.callCount(callDequeue), "the yield poll and the drain check")
+	requireIdleQueue(t, queue)
+}
+
+// TestReceiveWaitClosedBeforeRegisteredPoll closes the queue between two yield-phase polls, so
+// the closed check before the second one sends the consumer to the drain check.
+func TestReceiveWaitClosedBeforeRegisteredPoll(t *testing.T) {
+	fake := newScriptedEngine[int](8)
+	queue := newTestQueue(t, fake, WithConsumerWait(WaitStrategy{Yields: 2}))
+	ctx := closeAfterFirstAttempt(t, queue, fake, callDequeue)
+
+	received, err := queue.receiveWait(ctx, make([]int, 1), nil, nil)
+
+	assert.Same(t, ErrClosed, err)
+	assert.Zero(t, received)
+	assert.Equal(t, 2, fake.callCount(callDequeue), "the first poll and the drain check")
+	requireIdleQueue(t, queue)
+}
+
+// The Leave polling peek tests park another waiter by hand on the waiting side and check that
+// a registered caller leaving polling wakes it when room or items are left behind. Each case
+// acts on the first attempt of a wait with one yield.
+
+// leavePollingCase is one exit from polling. LeftOver is how many slots or items the case
+// frees or pushes at attempt 1, before the attempt if before is set and after it otherwise,
+// and act ends the wait at the same point.
+type leavePollingCase struct {
+	name     string
+	before   bool
+	leftOver int
+	act      func(queue *Queue[int], cancel context.CancelFunc)
+}
+
+func leavePollingCases() []leavePollingCase {
+	return []leavePollingCase{
+		{name: "moving", before: true, leftOver: 2, act: func(*Queue[int], context.CancelFunc) {}},
+		{
+			name:     "ctx",
+			leftOver: 1,
+			act:      func(_ *Queue[int], cancel context.CancelFunc) { cancel() },
+		},
+		{
+			name:     "closed",
+			leftOver: 1,
+			act:      func(queue *Queue[int], _ context.CancelFunc) { queue.Close() },
+		},
+	}
+}
+
+// leavePollingHooks returns hooks that run leaveBehind and then act at attempt 1 of kind,
+// before the attempt when before is set and after it otherwise.
+func leavePollingHooks(
+	kind engineCallKind,
+	before bool,
+	leaveBehind func(),
+	act func(),
+) (beforeHook func(engineCall), afterHook func(engineCall)) {
+	target := engineCall{kind: kind, count: 1}
+	hook := func(call engineCall) {
+		if call == target {
+			leaveBehind()
+			act()
+		}
+	}
+	if before {
+		return hook, nil
+	}
+	return nil, hook
+}
+
+func TestPushWaitLeavePollingWakesWaiter(t *testing.T) {
+	wantErrs := map[string]error{
+		"ctx":    context.Canceled,
+		"closed": ErrClosed,
+	}
+	for _, exit := range leavePollingCases() {
+		t.Run(exit.name, func(t *testing.T) {
+			queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{Yields: 1}))
+			other := parkProducer(t, &queue.producers)
+			ctx, cancel := newWaitContext(t)
+			fake.setHooks(leavePollingHooks(
+				callEnqueue,
+				exit.before,
+				func() { fake.takeRaw(exit.leftOver) },
+				func() { exit.act(queue, cancel) },
+			))
+
+			result := awaitPushResult(t, startPushWait(ctx, t, queue, 0))
+
+			if wantErr, ok := wantErrs[exit.name]; ok {
+				assert.Same(t, wantErr, result.err)
+				assert.Zero(t, result.pushed)
+			} else {
+				require.NoError(t, result.err)
+				assert.Equal(t, 1, result.pushed)
+			}
+			requireToken(t, other)
+			queue.producers.leavePolling(mustNotPeek(t))
+			queue.producers.putWaiter(other)
+			requireIdleQueue(t, queue)
+		})
+	}
+}
+
+func TestReceiveWaitLeavePollingWakesWaiter(t *testing.T) {
+	for _, exit := range leavePollingCases() {
+		t.Run(exit.name, func(t *testing.T) {
+			fake := newScriptedEngine[int](8)
+			queue := newTestQueue(t, fake, WithConsumerWait(WaitStrategy{Yields: 1}))
+			other := parkConsumer(t, &queue.consumers)
+			ctx, cancel := newWaitContext(t)
+			fake.setHooks(leavePollingHooks(
+				callDequeue,
+				exit.before,
+				func() { fake.pushRaw(sequence(1, exit.leftOver)...) },
+				func() { exit.act(queue, cancel) },
+			))
+
+			result := awaitResult(t, startReceiveWait(ctx, t, queue))
+
+			// The ctx exit returns ctx.Err() and leaves its item queued. The moving exit and the
+			// drain check after the closed exit each take item 1, and the moving exit leaves
+			// item 2.
+			if exit.name == "ctx" {
+				assert.Same(t, context.Canceled, result.err)
+			} else {
+				require.NoError(t, result.err)
+				assert.Equal(t, []int{1}, result.items)
+			}
+			wantLeft := map[string][]int{"moving": {2}, "ctx": {1}, "closed": nil}[exit.name]
+			assert.Equal(t, wantLeft, fake.takeRaw(len(wantLeft)), "items left for the woken one")
+			requireToken(t, other)
+			queue.consumers.leavePolling(mustNotPeek(t))
+			queue.consumers.putWaiter(other)
+			requireIdleQueue(t, queue)
+		})
+	}
 }

@@ -197,3 +197,194 @@ func isDone(ctx context.Context) bool {
 		return false
 	}
 }
+
+// pushWait waits for room after a fast-path attempt found none, following the design's
+// "Producers waiting for room". Attempt pushes the current chunk, or the single item, and
+// returns how many items it moved. PushedBefore is how many items the call pushed before it
+// waited.
+//
+// Once an attempt moves items, pushWait returns their count, with ErrClosedDuringPush if the
+// push raced Close and nil otherwise. If it sees the queue closed while it waits, it returns 0
+// with ErrClosed when pushedBefore is 0 and ErrClosedDuringPush otherwise. If ctx is done
+// first, it returns 0 with ctx.Err(). A closed queue wins over a done ctx. Whatever it returns,
+// the producer has left the wait.
+func (q *Queue[T]) pushWait(
+	ctx context.Context,
+	attempt func() int,
+	pushedBefore int,
+) (int, error) {
+	if pushed, finished, err := q.spinForRoom(ctx, attempt, pushedBefore); finished {
+		return pushed, err
+	}
+	if q.producers.register() {
+		return 0, closedWhileWaiting(pushedBefore)
+	}
+	woken := false
+	for {
+		pushed, finished, err := q.yieldForRoom(ctx, attempt, pushedBefore, woken)
+		if finished {
+			return pushed, err
+		}
+		if q.producerWait.NeverPark {
+			return q.pushWithoutParking(ctx, attempt, pushedBefore)
+		}
+		pushed, finished, err = q.parkForRoom(ctx, attempt, pushedBefore)
+		if finished {
+			return pushed, err
+		}
+		woken = true
+	}
+}
+
+// spinForRoom is the spin phase, in which the producer attempts without registering. Finished
+// reports whether the wait is over, with pushed and err as its result.
+func (q *Queue[T]) spinForRoom(
+	ctx context.Context,
+	attempt func() int,
+	pushedBefore int,
+) (pushed int, finished bool, err error) {
+	for poll := range q.producerWait.Spins {
+		if q.producers.load().closed() {
+			return 0, true, closedWhileWaiting(pushedBefore)
+		}
+		if poll%contextCheckInterval == 0 && isDone(ctx) {
+			return 0, true, ctx.Err()
+		}
+		if pushed = attempt(); pushed > 0 {
+			return pushed, true, q.consumerWakeCheck()
+		}
+	}
+	return 0, false, nil
+}
+
+// yieldForRoom is the yield phase of a registered producer. A producer just woken attempts at
+// least once, because its waker registered it to find the room that caused the wake. If the
+// wait is not finished, the producer is still registered.
+func (q *Queue[T]) yieldForRoom(
+	ctx context.Context,
+	attempt func() int,
+	pushedBefore int,
+	woken bool,
+) (pushed int, finished bool, err error) {
+	polls := q.producerWait.Yields
+	if woken {
+		polls = max(polls, 1)
+	}
+	for poll := range polls {
+		if poll > 0 {
+			runtime.Gosched()
+		}
+		pushed, finished, err = q.attemptRegistered(ctx, attempt, pushedBefore)
+		if finished {
+			return pushed, true, err
+		}
+	}
+	return 0, false, nil
+}
+
+// pushWithoutParking attempts until the wait is finished, for a strategy with NeverPark. The
+// producer stays registered throughout, so consumers never need to wake it.
+func (q *Queue[T]) pushWithoutParking(
+	ctx context.Context,
+	attempt func() int,
+	pushedBefore int,
+) (int, error) {
+	for {
+		pushed, finished, err := q.attemptRegistered(ctx, attempt, pushedBefore)
+		if finished {
+			return pushed, err
+		}
+		runtime.Gosched()
+	}
+}
+
+// attemptRegistered makes one attempt as a registered producer. Every return that finishes the
+// wait has run Leave polling, and a return that does not leaves the producer registered.
+func (q *Queue[T]) attemptRegistered(
+	ctx context.Context,
+	attempt func() int,
+	pushedBefore int,
+) (pushed int, finished bool, err error) {
+	if q.producers.load().closed() {
+		return 0, true, q.leavePollingClosed(pushedBefore)
+	}
+	if pushed = attempt(); pushed > 0 {
+		err = q.consumerWakeCheck()
+		q.producers.leavePolling(q.peekRoom)
+		return pushed, true, err
+	}
+	// The closed load comes before the ctx check, so a closed queue wins over a done ctx.
+	if q.producers.load().closed() {
+		return 0, true, q.leavePollingClosed(pushedBefore)
+	}
+	if isDone(ctx) {
+		q.producers.leavePolling(q.peekRoom)
+		return 0, true, ctx.Err()
+	}
+	return 0, false, nil
+}
+
+// parkForRoom is the design's Park procedure for a registered producer. If the wait is not
+// finished, a token arrived, and the waker has registered the producer again.
+func (q *Queue[T]) parkForRoom(
+	ctx context.Context,
+	attempt func() int,
+	pushedBefore int,
+) (pushed int, finished bool, err error) {
+	// Every return below comes after the waiter has left the list and its token, if any, has
+	// been received, so it is ready for reuse.
+	caller := q.producers.getWaiter()
+	defer q.producers.putWaiter(caller)
+	if q.producers.enlist(caller) {
+		return 0, true, q.leavePollingClosed(pushedBefore)
+	}
+	// The extra attempt must come after enlist. Room freed before enlist but after the last
+	// attempt found no parked waiter to wake, so only this attempt can see it.
+	if pushed = attempt(); pushed > 0 {
+		err = q.consumerWakeCheck()
+		q.producers.leaveList(caller, true, q.peekRoom)
+		return pushed, true, err
+	}
+	select {
+	case <-caller.token:
+		return 0, false, nil
+	case <-ctx.Done():
+		q.producers.leaveList(caller, false, q.peekRoom)
+		// Close closes done before it sets closed on the producer-side word, so only done is
+		// sure to show a Close that is under way, and the closed error must win over ctx.
+		select {
+		case <-q.done:
+			return 0, true, closedWhileWaiting(pushedBefore)
+		default:
+			return 0, true, ctx.Err()
+		}
+	case <-q.done:
+		q.producers.leaveList(caller, false, q.peekRoom)
+		return 0, true, closedWhileWaiting(pushedBefore)
+	}
+}
+
+// consumerWakeCheck runs the consumer wake check after an attempt that moved items, and returns
+// ErrClosedDuringPush if the push raced Close. It must run before the producer takes its own
+// side's mutex to leave the wait, and the producer must leave before it returns the error.
+func (q *Queue[T]) consumerWakeCheck() error {
+	if q.consumers.wakeCheck() {
+		return ErrClosedDuringPush
+	}
+	return nil
+}
+
+// leavePollingClosed is the exit of a registered producer that saw closed.
+func (q *Queue[T]) leavePollingClosed(pushedBefore int) error {
+	q.producers.leavePolling(q.peekRoom)
+	return closedWhileWaiting(pushedBefore)
+}
+
+// closedWhileWaiting is the error of a producer that saw closed before an attempt moved items.
+// An unwrapped ErrClosed always means the call pushed nothing.
+func closedWhileWaiting(pushedBefore int) error {
+	if pushedBefore == 0 {
+		return ErrClosed
+	}
+	return ErrClosedDuringPush
+}
