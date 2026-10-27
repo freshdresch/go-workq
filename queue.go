@@ -127,3 +127,10 @@ func (q *Queue[T]) Close() {
 	q.producers.setClosedLocked()
 	q.producers.mu.Unlock()
 }
+
+// peekItems reports whether a dequeue would find items, without moving any. A zero-length
+// DequeueBurst returns a fresh count of available items (assumption A4).
+func (q *Queue[T]) peekItems() bool {
+	_, available := q.engine.DequeueBurst(nil)
+	return available > 0
+}
