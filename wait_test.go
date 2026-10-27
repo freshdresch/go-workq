@@ -659,6 +659,41 @@ func TestReceiveWaitExtraAttemptLeavesItemsWakesWaiter(t *testing.T) {
 	})
 }
 
+// TestReceiveWaitRemovedCallerHandsOff covers the branch of leaveList in which a waker already
+// removed the caller. The caller's extra attempt takes items, but a wake check during the attempt
+// has already removed it and registered it as a poller, so it must take its token and leave
+// polling, and that Leave polling must wake the other parked consumer for the item left over. The
+// test relies on oldest-first wake order, which TestWaitSideWakeOrderOldestFirst pins, so the wake
+// check picks the caller, which parks first. If the order changes, the wake goes to the other
+// consumer and the test fails, and the fix is to park the other consumer before the caller.
+func TestReceiveWaitRemovedCallerHandsOff(t *testing.T) {
+	fake := newScriptedEngine[int](8)
+	queue := newTestQueue(t, fake, WithConsumerWait(WaitStrategy{}))
+	var other *waiter
+	// With no spins or yields, the first burst is the caller's extra attempt, which runs after
+	// the caller is listed.
+	fake.setHooks(func(call engineCall) {
+		if call.kind == callDequeueBurst && call.count == 1 {
+			other = parkConsumer(t, &queue.consumers)
+			fake.pushRaw(1, 2, 3)
+			queue.consumers.wakeCheck()
+			assertNoToken(t, other)
+		}
+	}, nil)
+
+	dst := make([]int, 2)
+	received, err := queue.receiveWait(context.Background(), dst, nil, nil)
+
+	require.NoError(t, err)
+	assert.Equal(t, []int{1, 2}, dst[:received])
+	require.NotNil(t, other, "the extra attempt's hook ran")
+	requireToken(t, other)
+	queue.consumers.leavePolling(mustNotPeek(t))
+	queue.consumers.putWaiter(other)
+	assert.Equal(t, []int{3}, fake.takeRaw(1))
+	requireIdleQueue(t, queue)
+}
+
 func TestReceiveWaitOwnWaiter(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		fake := newScriptedEngine[int](8)
