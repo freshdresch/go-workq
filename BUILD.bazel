@@ -4,22 +4,35 @@ go_library(
     name = "workq",
     srcs = [
         "doc.go",
+        "engine.go",
+        "queue.go",
         "waitside.go",
+        "workq.go",
     ],
     importpath = "github.com/freshdresch/go-data-structures/workq",
     visibility = ["//visibility:public"],
+    deps = [
+        "//ring",
+        "//ring/dpdk",
+        "//ring/frontier",
+    ],
 )
 
 go_test(
     name = "workq_test",
     srcs = [
+        "engine_test.go",
         "protocol_stress_test.go",
         "race_off_test.go",
         "race_on_test.go",
         "waitside_test.go",
+        "workq_test.go",
     ],
     embed = [":workq"],
     deps = [
+        "//ring",
+        "//ring/dpdk",
+        "//ring/frontier",
         "@com_github_stretchr_testify//assert:assert",
         "@com_github_stretchr_testify//require:require",
     ],
