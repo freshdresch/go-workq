@@ -103,6 +103,9 @@ func (q *Queue[T]) PushBatch(ctx context.Context, items []T) (pushed int, err er
 // checkBetweenChunks is PushBatch's check before each chunk after the first. It loads the
 // consumer-side word for closed before it checks ctx, so a closed queue wins over a done ctx.
 func (q *Queue[T]) checkBetweenChunks(ctx context.Context) error {
+	if q.hooks.beforeChunkCheck != nil {
+		q.hooks.beforeChunkCheck()
+	}
 	// The wake check after the previous chunk normally catches a Close. This load catches one
 	// that lands between that check and the next chunk.
 	if q.consumers.load().closed() {

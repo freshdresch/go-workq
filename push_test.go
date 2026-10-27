@@ -593,6 +593,27 @@ func TestPushBatchClosedAfterFirstChunk(t *testing.T) {
 	requireIdleQueue(t, queue)
 }
 
+// TestPushBatchClosedBetweenChunks closes the queue and cancels ctx after the first chunk's wake
+// check and before the second chunk, where no engine call runs. The closed error must win over
+// the done ctx.
+func TestPushBatchClosedBetweenChunks(t *testing.T) {
+	fake := newScriptedEngine[int](8)
+	queue := newTestQueue[int](t, fake, WithMaxPushBatch(2))
+	ctx, cancel := newWaitContext(t)
+	queue.hooks.beforeChunkCheck = func() {
+		queue.Close()
+		cancel()
+	}
+
+	pushed, err := queue.PushBatch(ctx, sequence(0, 4))
+
+	assert.Same(t, ErrClosedDuringPush, err)
+	assert.Equal(t, 2, pushed, "only the first chunk")
+	assert.Equal(t, 1, fake.callCount(callEnqueueBurst), "no chunk after the close")
+	assert.Equal(t, sequence(0, 2), fake.takeRaw(2))
+	requireIdleQueue(t, queue)
+}
+
 // TestPushBatchWakesAfterFirstChunk checks that the wake comes right after the first chunk
 // moves, not only once the whole batch is in.
 func TestPushBatchWakesAfterFirstChunk(t *testing.T) {

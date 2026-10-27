@@ -23,10 +23,22 @@ type Queue[T any] struct {
 	consumerWait    WaitStrategy
 	producerWait    WaitStrategy
 	done            chan struct{}
+	hooks           testHooks
 	_               [128]byte
 	consumers       waitSide
 	_               [128]byte
 	producers       waitSide
+}
+
+// testHooks lets tests act at points where no engine call runs. Tests set them, and production
+// code never does, so each is nil outside tests.
+type testHooks struct {
+	// afterCloseDone runs in Close after done is closed and before the producer side is marked
+	// closed, with no mutex held.
+	afterCloseDone func()
+	// beforeChunkCheck runs in PushBatch before each chunk after the first, before the closed
+	// load.
+	beforeChunkCheck func()
 }
 
 // resolveConfig checks the wait strategies before the engine is built, so a bad strategy never
@@ -122,6 +134,10 @@ func (q *Queue[T]) Close() {
 		close(q.done)
 	}
 	q.consumers.mu.Unlock()
+
+	if q.hooks.afterCloseDone != nil {
+		q.hooks.afterCloseDone()
+	}
 
 	q.producers.mu.Lock()
 	q.producers.setClosedLocked()

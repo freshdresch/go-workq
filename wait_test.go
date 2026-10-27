@@ -1042,6 +1042,49 @@ func TestPushWaitCancelThenCloseParked(t *testing.T) {
 	}
 }
 
+// TestPushWaitCancelThenCloseMidway cancels a parked producer and then closes, and lets the
+// producer run to completion while Close is between closing done and setting closed on the
+// producer-side word. The cancel sends the producer to the ctx branch, where only done shows the
+// close, so the closed error must still win.
+func TestPushWaitCancelThenCloseMidway(t *testing.T) {
+	setGOMAXPROCS(t, 1)
+	testCases := []struct {
+		name         string
+		pushedBefore int
+		wantErr      error
+	}{
+		{name: "nothing pushed before", pushedBefore: 0, wantErr: ErrClosed},
+		{name: "items pushed before", pushedBefore: 3, wantErr: ErrClosedDuringPush},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				queue, _ := newFullTestQueue(t, WithProducerWait(WaitStrategy{}))
+				ctx, cancel := newWaitContext(t)
+				results := startPushWait(ctx, t, queue, testCase.pushedBefore)
+				synctest.Wait()
+				requireParked(t, &queue.producers, 1)
+				// results has a buffer of 1, and the producer sends before it exits, so a
+				// result in it shows the producer finished inside the window.
+				finishedMidway := false
+				queue.hooks.afterCloseDone = func() {
+					synctest.Wait()
+					finishedMidway = len(results) == 1
+				}
+
+				cancel()
+				queue.Close()
+
+				result := awaitPushResult(t, results)
+				assert.Same(t, testCase.wantErr, result.err)
+				assert.Zero(t, result.pushed)
+				assert.True(t, finishedMidway, "producer finished between done and closed")
+				requireIdleQueue(t, queue)
+			})
+		})
+	}
+}
+
 func TestPushWaitWokenPollsFirst(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{}))
