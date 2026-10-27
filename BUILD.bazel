@@ -13,6 +13,9 @@ go_library(
 go_test(
     name = "workq_test",
     srcs = [
+        "protocol_stress_test.go",
+        "race_off_test.go",
+        "race_on_test.go",
         "waitside_test.go",
     ],
     embed = [":workq"],
