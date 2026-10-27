@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "workq",
+    srcs = [
+        "doc.go",
+        "waitside.go",
+    ],
+    importpath = "github.com/freshdresch/go-data-structures/workq",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "workq_test",
+    srcs = [
+        "waitside_test.go",
+    ],
+    embed = [":workq"],
+    deps = [
+        "@com_github_stretchr_testify//assert:assert",
+        "@com_github_stretchr_testify//require:require",
+    ],
+)
