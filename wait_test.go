@@ -736,7 +736,7 @@ func awaitPushResult(t *testing.T, results <-chan pushWaitResult) pushWaitResult
 	case result := <-results:
 		return result
 	case <-time.After(waitTestTimeout):
-		require.FailNow(t, "pushWait did not return")
+		require.FailNow(t, "push did not return")
 		return pushWaitResult{}
 	}
 }
