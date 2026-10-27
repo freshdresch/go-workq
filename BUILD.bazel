@@ -31,6 +31,7 @@ go_test(
         "race_off_test.go",
         "race_on_test.go",
         "receive_test.go",
+        "stress_test.go",
         "wait_test.go",
         "waitside_test.go",
         "workq_test.go",
