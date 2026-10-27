@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -433,31 +434,35 @@ func TestPushBatchWakesParkedConsumer(t *testing.T) {
 				append([]Option{}, engineCase.options...),
 				WithConsumerWait(WaitStrategy{}),
 			)
-			queue, err := New[int](capacity, options...)
-			require.NoError(t, err)
-			ctx, _ := newWaitContext(t)
-			var received atomic.Int64
-			consumeResults := startConsume(ctx, t, queue, func(_ context.Context, batch []int) error {
-				for _, item := range batch {
-					assert.Equal(t, int(received.Load()), item, "items in order")
-					received.Add(1)
+			synctest.Test(t, func(t *testing.T) {
+				queue, err := New[int](capacity, options...)
+				require.NoError(t, err)
+				ctx, _ := newWaitContext(t)
+				var received atomic.Int64
+				countInOrder := func(_ context.Context, batch []int) error {
+					for _, item := range batch {
+						assert.Equal(t, int(received.Load()), item, "items in order")
+						received.Add(1)
+					}
+					return nil
 				}
-				return nil
+				consumeResults := startConsume(ctx, t, queue, countInOrder)
+				synctest.Wait()
+				requireParked(t, &queue.consumers, 1)
+
+				result := awaitPushResult(
+					t,
+					startPushBatch(ctx, t, queue, sequence(0, itemCount)),
+				)
+
+				require.NoError(t, result.err)
+				assert.Equal(t, itemCount, result.pushed)
+				synctest.Wait()
+				require.Equal(t, int64(itemCount), received.Load(), "every item received")
+				queue.Close()
+				assert.NoError(t, awaitConsume(t, consumeResults))
+				requireIdleQueue(t, queue)
 			})
-			awaitParked(t, &queue.consumers, 1)
-
-			result := awaitPushResult(t, startPushBatch(ctx, t, queue, sequence(0, itemCount)))
-
-			require.NoError(t, result.err)
-			assert.Equal(t, itemCount, result.pushed)
-			awaitCondition(
-				t,
-				func() bool { return received.Load() == itemCount },
-				"every item received",
-			)
-			queue.Close()
-			assert.NoError(t, awaitConsume(t, consumeResults))
-			requireIdleQueue(t, queue)
 		})
 	}
 }
@@ -483,19 +488,22 @@ func TestPushWakesParkedConsumer(t *testing.T) {
 func TestPushParkedUntilClose(t *testing.T) {
 	for _, engineCase := range engineCases() {
 		t.Run(engineCase.name, func(t *testing.T) {
-			queue := newWaitingPushQueue(t, engineCase)
-			pushed, err := queue.TryPushBatch(sequence(0, tryTestCapacity))
-			require.NoError(t, err)
-			require.Equal(t, tryTestCapacity, pushed)
-			ctx, _ := newWaitContext(t)
-			results := startPush(ctx, t, queue, tryTestCapacity)
-			awaitParked(t, &queue.producers, 1)
+			synctest.Test(t, func(t *testing.T) {
+				queue := newWaitingPushQueue(t, engineCase)
+				pushed, err := queue.TryPushBatch(sequence(0, tryTestCapacity))
+				require.NoError(t, err)
+				require.Equal(t, tryTestCapacity, pushed)
+				ctx, _ := newWaitContext(t)
+				results := startPush(ctx, t, queue, tryTestCapacity)
+				synctest.Wait()
+				requireParked(t, &queue.producers, 1)
 
-			queue.Close()
+				queue.Close()
 
-			assert.Same(t, ErrClosed, awaitPush(t, results))
-			assert.Equal(t, sequence(0, tryTestCapacity), drainClosed(t, queue))
-			requireIdleQueue(t, queue)
+				assert.Same(t, ErrClosed, awaitPush(t, results))
+				assert.Equal(t, sequence(0, tryTestCapacity), drainClosed(t, queue))
+				requireIdleQueue(t, queue)
+			})
 		})
 	}
 }
@@ -503,25 +511,28 @@ func TestPushParkedUntilClose(t *testing.T) {
 func TestPushBatchParkedUntilClose(t *testing.T) {
 	for _, engineCase := range engineCases() {
 		t.Run(engineCase.name, func(t *testing.T) {
-			queue := newWaitingPushQueue(t, engineCase)
-			chunkLength := queue.maxPushBatch
-			alreadyQueued := tryTestCapacity - chunkLength
-			require.Positive(t, alreadyQueued)
-			pushed, err := queue.TryPushBatch(sequence(0, alreadyQueued))
-			require.NoError(t, err)
-			require.Equal(t, alreadyQueued, pushed)
-			ctx, _ := newWaitContext(t)
-			// The first chunk fills the queue, so the second parks.
-			results := startPushBatch(ctx, t, queue, sequence(alreadyQueued, 2*chunkLength))
-			awaitParked(t, &queue.producers, 1)
+			synctest.Test(t, func(t *testing.T) {
+				queue := newWaitingPushQueue(t, engineCase)
+				chunkLength := queue.maxPushBatch
+				alreadyQueued := tryTestCapacity - chunkLength
+				require.Positive(t, alreadyQueued)
+				pushed, err := queue.TryPushBatch(sequence(0, alreadyQueued))
+				require.NoError(t, err)
+				require.Equal(t, alreadyQueued, pushed)
+				ctx, _ := newWaitContext(t)
+				// The first chunk fills the queue, so the second parks.
+				results := startPushBatch(ctx, t, queue, sequence(alreadyQueued, 2*chunkLength))
+				synctest.Wait()
+				requireParked(t, &queue.producers, 1)
 
-			queue.Close()
+				queue.Close()
 
-			result := awaitPushResult(t, results)
-			assert.Same(t, ErrClosedDuringPush, result.err)
-			assert.Equal(t, chunkLength, result.pushed)
-			assert.Equal(t, sequence(0, tryTestCapacity), drainClosed(t, queue))
-			requireIdleQueue(t, queue)
+				result := awaitPushResult(t, results)
+				assert.Same(t, ErrClosedDuringPush, result.err)
+				assert.Equal(t, chunkLength, result.pushed)
+				assert.Equal(t, sequence(0, tryTestCapacity), drainClosed(t, queue))
+				requireIdleQueue(t, queue)
+			})
 		})
 	}
 }
@@ -651,55 +662,64 @@ func TestPushBatchRetryIgnoresDoneContext(t *testing.T) {
 // TestPushBatchWaitsMidChunk checks that a chunk that moves part of its items and then finds no
 // room waits, and that the closed error then counts the items pushed before the wait.
 func TestPushBatchWaitsMidChunk(t *testing.T) {
-	fake := newScriptedEngine[int](4)
-	queue := newTestQueue[int](t, fake, WithProducerWait(WaitStrategy{}))
-	fake.pushRaw(sequence(0, 2)...)
-	ctx, _ := newWaitContext(t)
-	results := startPushBatch(ctx, t, queue, sequence(2, 3))
-	awaitParked(t, &queue.producers, 1)
+	synctest.Test(t, func(t *testing.T) {
+		fake := newScriptedEngine[int](4)
+		queue := newTestQueue[int](t, fake, WithProducerWait(WaitStrategy{}))
+		fake.pushRaw(sequence(0, 2)...)
+		ctx, _ := newWaitContext(t)
+		results := startPushBatch(ctx, t, queue, sequence(2, 3))
+		synctest.Wait()
+		requireParked(t, &queue.producers, 1)
 
-	queue.Close()
+		queue.Close()
 
-	result := awaitPushResult(t, results)
-	assert.Same(t, ErrClosedDuringPush, result.err)
-	assert.Equal(t, 2, result.pushed)
-	assert.Equal(t, sequence(0, 4), fake.takeRaw(4))
-	requireIdleQueue(t, queue)
+		result := awaitPushResult(t, results)
+		assert.Same(t, ErrClosedDuringPush, result.err)
+		assert.Equal(t, 2, result.pushed)
+		assert.Equal(t, sequence(0, 4), fake.takeRaw(4))
+		requireIdleQueue(t, queue)
+	})
 }
 
 func TestPushWokenByWaitingConsumer(t *testing.T) {
-	fake := newScriptedEngine[int](1)
-	queue := newTestQueue[int](
-		t,
-		fake,
-		WithConsumerWait(WaitStrategy{}),
-		WithProducerWait(WaitStrategy{}),
-	)
-	ctx, _ := newWaitContext(t)
-	receiveResults := startReceive(ctx, t, queue, 1)
-	// With no spins or yields, the consumer makes its fast-path dequeue and, after it enlists,
-	// its extra attempt. Only a wake makes it dequeue again.
-	awaitParked(t, &queue.consumers, 1)
-	awaitDequeues(t, fake, 2)
+	synctest.Test(t, func(t *testing.T) {
+		fake := newScriptedEngine[int](1)
+		queue := newTestQueue[int](
+			t,
+			fake,
+			WithConsumerWait(WaitStrategy{}),
+			WithProducerWait(WaitStrategy{}),
+		)
+		ctx, _ := newWaitContext(t)
+		receiveResults := startReceive(ctx, t, queue, 1)
+		// With no spins or yields, the consumer makes its fast-path dequeue and, after it
+		// enlists, its extra attempt. Only a wake makes it dequeue again.
+		synctest.Wait()
+		requireParked(t, &queue.consumers, 1)
+		require.Equal(t, 2, fake.callCount(callDequeue), "dequeue count")
 
-	fake.holdVisibility()
-	require.NoError(t, queue.Push(ctx, 1), "producer A")
-	awaitCondition(
-		t,
-		func() bool { return fake.callCount(callDequeue) > 2 },
-		"the consumer woken by producer A dequeues",
-	)
-	awaitParked(t, &queue.consumers, 1)
-	pushResults := startPush(ctx, t, queue, 2)
-	awaitParked(t, &queue.producers, 1)
+		fake.holdVisibility()
+		require.NoError(t, queue.Push(ctx, 1), "producer A")
+		synctest.Wait()
+		require.Greater(
+			t,
+			fake.callCount(callDequeue),
+			2,
+			"the consumer woken by producer A dequeues",
+		)
+		requireParked(t, &queue.consumers, 1)
+		pushResults := startPush(ctx, t, queue, 2)
+		synctest.Wait()
+		requireParked(t, &queue.producers, 1)
 
-	fake.releaseVisibility()
-	assert.False(t, queue.consumers.wakeCheck())
+		fake.releaseVisibility()
+		assert.False(t, queue.consumers.wakeCheck())
 
-	assert.NoError(t, awaitPush(t, pushResults), "producer B")
-	result := awaitResult(t, receiveResults)
-	require.NoError(t, result.err)
-	assert.Equal(t, []int{1}, result.items)
-	assert.Equal(t, []int{2}, fake.takeRaw(1))
-	requireIdleQueue(t, queue)
+		assert.NoError(t, awaitPush(t, pushResults), "producer B")
+		result := awaitResult(t, receiveResults)
+		require.NoError(t, result.err)
+		assert.Equal(t, []int{1}, result.items)
+		assert.Equal(t, []int{2}, fake.takeRaw(1))
+		requireIdleQueue(t, queue)
+	})
 }

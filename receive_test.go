@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -431,17 +432,20 @@ func TestConsumeWrapsHandlerError(t *testing.T) {
 func TestReceiveParkedUntilClose(t *testing.T) {
 	for _, engineCase := range engineCases() {
 		t.Run(engineCase.name, func(t *testing.T) {
-			queue := newTryQueue(t, engineCase)
-			ctx, _ := newWaitContext(t)
-			results := startReceive(ctx, t, queue, 4)
-			awaitParked(t, &queue.consumers, 1)
+			synctest.Test(t, func(t *testing.T) {
+				queue := newTryQueue(t, engineCase)
+				ctx, _ := newWaitContext(t)
+				results := startReceive(ctx, t, queue, 4)
+				synctest.Wait()
+				requireParked(t, &queue.consumers, 1)
 
-			queue.Close()
+				queue.Close()
 
-			result := awaitResult(t, results)
-			assert.Same(t, ErrClosed, result.err)
-			assert.Zero(t, result.received)
-			requireIdleQueue(t, queue)
+				result := awaitResult(t, results)
+				assert.Same(t, ErrClosed, result.err)
+				assert.Zero(t, result.received)
+				requireIdleQueue(t, queue)
+			})
 		})
 	}
 }
@@ -449,18 +453,21 @@ func TestReceiveParkedUntilClose(t *testing.T) {
 func TestConsumeParkedUntilClose(t *testing.T) {
 	for _, engineCase := range engineCases() {
 		t.Run(engineCase.name, func(t *testing.T) {
-			queue := newTryQueue(t, engineCase)
-			ctx, _ := newWaitContext(t)
-			results := startConsume(ctx, t, queue, func(context.Context, []int) error {
-				assert.Fail(t, "handler ran with no items")
-				return nil
+			synctest.Test(t, func(t *testing.T) {
+				queue := newTryQueue(t, engineCase)
+				ctx, _ := newWaitContext(t)
+				results := startConsume(ctx, t, queue, func(context.Context, []int) error {
+					assert.Fail(t, "handler ran with no items")
+					return nil
+				})
+				synctest.Wait()
+				requireParked(t, &queue.consumers, 1)
+
+				queue.Close()
+
+				assert.NoError(t, awaitConsume(t, results))
+				requireIdleQueue(t, queue)
 			})
-			awaitParked(t, &queue.consumers, 1)
-
-			queue.Close()
-
-			assert.NoError(t, awaitConsume(t, results))
-			requireIdleQueue(t, queue)
 		})
 	}
 }
@@ -468,31 +475,36 @@ func TestConsumeParkedUntilClose(t *testing.T) {
 func TestConsumeClearsBufferWhileWaiting(t *testing.T) {
 	for _, engineCase := range engineCases() {
 		t.Run(engineCase.name, func(t *testing.T) {
-			queue, err := New[*int](tryTestCapacity, engineCase.options...)
-			require.NoError(t, err)
-			first, second := 1, 2
-			pushed, err := queue.TryPushBatch([]*int{&first, &second})
-			require.NoError(t, err)
-			require.Equal(t, 2, pushed)
-			ctx, cancel := newWaitContext(t)
-			// The handler sends the batch itself, not a copy, so the test sees Consume's buffer.
-			batches := make(chan []*int, 1)
-			results := startConsume(ctx, t, queue, func(_ context.Context, batch []*int) error {
-				batches <- batch
-				return nil
+			synctest.Test(t, func(t *testing.T) {
+				queue, err := New[*int](tryTestCapacity, engineCase.options...)
+				require.NoError(t, err)
+				first, second := 1, 2
+				pushed, err := queue.TryPushBatch([]*int{&first, &second})
+				require.NoError(t, err)
+				require.Equal(t, 2, pushed)
+				ctx, cancel := newWaitContext(t)
+				// The handler sends the batch itself, not a copy, so the test sees Consume's
+				// buffer.
+				batches := make(chan []*int, 1)
+				sendBatch := func(_ context.Context, batch []*int) error {
+					batches <- batch
+					return nil
+				}
+				results := startConsume(ctx, t, queue, sendBatch)
+				batch := awaitBatch(t, batches)
+				require.Len(t, batch, 2)
+
+				// Consume clears the buffer before it registers, and the parked count comes after
+				// that, so the loads below see the cleared elements.
+				synctest.Wait()
+				requireParked(t, &queue.consumers, 1)
+
+				assert.Equal(t, []*int{nil, nil}, batch, "the used part of the buffer")
+				cancel()
+				assert.Same(t, context.Canceled, awaitConsume(t, results))
+				requireIdleSide(t, &queue.consumers)
+				requireIdleSide(t, &queue.producers)
 			})
-			batch := awaitBatch(t, batches)
-			require.Len(t, batch, 2)
-
-			// Consume clears the buffer before it registers, and the parked count comes after
-			// that, so the loads below see the cleared elements.
-			awaitParked(t, &queue.consumers, 1)
-
-			assert.Equal(t, []*int{nil, nil}, batch, "the used part of the buffer")
-			cancel()
-			assert.Same(t, context.Canceled, awaitConsume(t, results))
-			requireIdleSide(t, &queue.consumers)
-			requireIdleSide(t, &queue.producers)
 		})
 	}
 }
