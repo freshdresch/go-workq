@@ -5,7 +5,9 @@ go_library(
     srcs = [
         "doc.go",
         "engine.go",
+        "push.go",
         "queue.go",
+        "receive.go",
         "waitside.go",
         "workq.go",
     ],
@@ -22,9 +24,12 @@ go_test(
     name = "workq_test",
     srcs = [
         "engine_test.go",
+        "fake_engine_test.go",
         "protocol_stress_test.go",
+        "push_test.go",
         "race_off_test.go",
         "race_on_test.go",
+        "receive_test.go",
         "waitside_test.go",
         "workq_test.go",
     ],

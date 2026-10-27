@@ -95,3 +95,35 @@ func newQueue[T any](engine engine[T], cfg config) *Queue[T] {
 func (q *Queue[T]) Capacity() int {
 	return q.engine.Capacity()
 }
+
+// Close closes the queue. Like closing a Go channel, Close must be called only after every
+// producer call has returned. Consumers then receive every pushed item before they get
+// ErrClosed. Unlike a channel, nothing panics. A second Close does nothing, and every producer
+// call made after Close returns ErrClosed and pushes nothing.
+//
+// A producer call that races Close breaks that rule. If it pushed items and then saw the close,
+// it returns ErrClosedDuringPush, and those items may not be delivered. A producer that is
+// waiting for room when Close runs returns ErrClosed if it pushed nothing in that call, and
+// ErrClosedDuringPush with its count if it pushed something.
+//
+// A nil error from a producer call means its items are delivered only when two conditions hold.
+// No producer call overlaps Close, and consumers keep receiving until the queue is closed and
+// drained. If any producer races Close, a nil error promises nothing, even to producers that
+// kept the rule, because a racing producer stalled mid-copy can hold back items pushed after it.
+//
+// Without a Close, a producer waiting for room after every consumer has returned waits until
+// its ctx is done, so the owner of that ctx must cancel it when the consumers stop.
+func (q *Queue[T]) Close() {
+	// The consumer side is closed under its mutex, so a consumer parking at the same time either
+	// sees closed and does not park, or is already listed and done wakes it. The two mutexes are
+	// never held together.
+	q.consumers.mu.Lock()
+	if q.consumers.setClosedLocked() {
+		close(q.done)
+	}
+	q.consumers.mu.Unlock()
+
+	q.producers.mu.Lock()
+	q.producers.setClosedLocked()
+	q.producers.mu.Unlock()
+}
