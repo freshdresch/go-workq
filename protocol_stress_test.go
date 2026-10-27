@@ -320,6 +320,6 @@ func runProtocolStressRound(t *testing.T, round int) {
 	}
 	assert.Equal(t, uint64(items), run.fake.completed, "round %d: completed positions", round)
 	assert.Equal(t, uint64(items), run.fake.released, "round %d: released positions", round)
-	requireIdleSide(t, &run.consumerSide)
-	requireIdleSide(t, &run.producerSide)
+	assertIdleSide(t, &run.consumerSide)
+	assertIdleSide(t, &run.producerSide)
 }

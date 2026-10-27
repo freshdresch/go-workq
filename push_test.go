@@ -22,7 +22,7 @@ func TestTryPushFull(t *testing.T) {
 			assert.Same(t, ErrFull, queue.TryPush(tryTestCapacity))
 
 			assert.Equal(t, sequence(0, tryTestCapacity), receiveAll(t, queue))
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -41,7 +41,7 @@ func TestTryPushBatchPartial(t *testing.T) {
 			assert.Equal(t, 4, pushed)
 
 			assert.Equal(t, sequence(0, tryTestCapacity), receiveAll(t, queue))
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -58,7 +58,7 @@ func TestTryPushBatchLongerThanMaxBatch(t *testing.T) {
 			assert.Equal(t, batchLength, pushed)
 
 			assert.Equal(t, sequence(0, batchLength), receiveAll(t, queue))
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -75,7 +75,7 @@ func TestTryPushBatchZeroLength(t *testing.T) {
 			pushed, err = queue.TryPushBatch([]int{})
 			assert.Same(t, ErrClosed, err, "closed")
 			assert.Zero(t, pushed, "closed")
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -94,7 +94,7 @@ func TestTryPushAfterClose(t *testing.T) {
 			received, err := queue.TryReceive(make([]int, 1))
 			assert.Same(t, ErrClosed, err, "nothing was pushed after Close")
 			assert.Zero(t, received)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -111,7 +111,7 @@ func TestTryPushWakesParkedConsumer(t *testing.T) {
 			queue.consumers.leavePolling(mustNotPeek(t))
 			queue.consumers.putWaiter(consumer)
 			assert.Equal(t, []int{1}, receiveAll(t, queue))
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -131,7 +131,7 @@ func TestTryPushAllocs(t *testing.T) {
 			require.NoError(t, pushErr)
 			assert.Zero(t, allocs)
 			assert.Len(t, receiveAll(t, queue), tryTestCapacity)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -148,7 +148,7 @@ func TestTryPushClosedDuringPush(t *testing.T) {
 	assert.Same(t, ErrClosedDuringPush, queue.TryPush(1))
 
 	assert.Equal(t, []int{1}, fake.takeRaw(1), "the item was pushed")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestTryPushBatchClosedDuringPush(t *testing.T) {
@@ -165,7 +165,7 @@ func TestTryPushBatchClosedDuringPush(t *testing.T) {
 	assert.Same(t, ErrClosedDuringPush, err)
 	assert.Equal(t, 3, pushed)
 	assert.Equal(t, []int{1, 2, 3}, fake.takeRaw(3), "the items were pushed")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestTryPushBatchWakesParkedConsumer(t *testing.T) {
@@ -182,7 +182,7 @@ func TestTryPushBatchWakesParkedConsumer(t *testing.T) {
 			queue.consumers.leavePolling(mustNotPeek(t))
 			queue.consumers.putWaiter(consumer)
 			assert.Equal(t, []int{1, 2}, receiveAll(t, queue))
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -208,7 +208,7 @@ func TestTryPushBatchWakesAfterFirstChunk(t *testing.T) {
 	queue.consumers.leavePolling(mustNotPeek(t))
 	queue.consumers.putWaiter(consumer)
 	assert.Equal(t, sequence(0, 5), fake.takeRaw(5))
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestTryPushBatchClosedAfterFirstChunk(t *testing.T) {
@@ -226,7 +226,7 @@ func TestTryPushBatchClosedAfterFirstChunk(t *testing.T) {
 	assert.Equal(t, 2, pushed, "only the first chunk")
 	assert.Equal(t, 1, fake.callCount(callEnqueueBurst), "no chunk after the close")
 	assert.Equal(t, sequence(0, 2), fake.takeRaw(2))
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestTryPushBatchClosedDuringPartialChunk(t *testing.T) {
@@ -244,7 +244,7 @@ func TestTryPushBatchClosedDuringPartialChunk(t *testing.T) {
 	assert.Same(t, ErrClosedDuringPush, err, "the close wins over the partial chunk")
 	assert.Equal(t, 1, pushed)
 	assert.Equal(t, []int{0}, fake.takeRaw(1))
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 // startPush runs Push in a new goroutine, and returns the channel that gets its error. The test
@@ -343,7 +343,7 @@ func TestPushDoneContextWithRoom(t *testing.T) {
 			require.NoError(t, queue.Push(newDoneContext(), 1))
 
 			assert.Equal(t, []int{1}, receiveAll(t, queue))
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -359,7 +359,7 @@ func TestPushFullDoneContext(t *testing.T) {
 			assert.Same(t, context.Canceled, queue.Push(newDoneContext(), tryTestCapacity))
 
 			assert.Equal(t, sequence(0, tryTestCapacity), receiveAll(t, queue))
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -380,7 +380,7 @@ func TestPushBatchDoneContext(t *testing.T) {
 			assert.Same(t, context.Canceled, err, "two chunks")
 			assert.Equal(t, chunkLength, pushed, "two chunks")
 			assert.Equal(t, sequence(0, chunkLength), receiveAll(t, queue), "two chunks")
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -398,7 +398,7 @@ func TestPushBatchZeroLength(t *testing.T) {
 			pushed, err = queue.PushBatch(ctx, []int{})
 			assert.Same(t, ErrClosed, err, "closed")
 			assert.Zero(t, pushed, "closed")
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -418,7 +418,7 @@ func TestPushAfterClose(t *testing.T) {
 			received, err := queue.TryReceive(make([]int, 1))
 			assert.Same(t, ErrClosed, err, "nothing was pushed after Close")
 			assert.Zero(t, received)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -461,7 +461,7 @@ func TestPushBatchWakesParkedConsumer(t *testing.T) {
 				require.Equal(t, int64(itemCount), received.Load(), "every item received")
 				queue.Close()
 				assert.NoError(t, awaitConsume(t, consumeResults))
-				requireIdleQueue(t, queue)
+				assertIdleQueue(t, queue)
 			})
 		})
 	}
@@ -480,7 +480,7 @@ func TestPushWakesParkedConsumer(t *testing.T) {
 			queue.consumers.leavePolling(mustNotPeek(t))
 			queue.consumers.putWaiter(consumer)
 			assert.Equal(t, []int{1}, receiveAll(t, queue))
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -502,7 +502,7 @@ func TestPushParkedUntilClose(t *testing.T) {
 
 				assert.Same(t, ErrClosed, awaitPush(t, results))
 				assert.Equal(t, sequence(0, tryTestCapacity), drainClosed(t, queue))
-				requireIdleQueue(t, queue)
+				assertIdleQueue(t, queue)
 			})
 		})
 	}
@@ -531,7 +531,7 @@ func TestPushBatchParkedUntilClose(t *testing.T) {
 				assert.Same(t, ErrClosedDuringPush, result.err)
 				assert.Equal(t, chunkLength, result.pushed)
 				assert.Equal(t, sequence(0, tryTestCapacity), drainClosed(t, queue))
-				requireIdleQueue(t, queue)
+				assertIdleQueue(t, queue)
 			})
 		})
 	}
@@ -553,7 +553,7 @@ func TestPushAllocs(t *testing.T) {
 			require.NoError(t, pushErr)
 			assert.Zero(t, allocs)
 			assert.Len(t, receiveAll(t, queue), tryTestCapacity)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -571,7 +571,7 @@ func TestPushClosedDuringPush(t *testing.T) {
 	assert.Same(t, ErrClosedDuringPush, queue.Push(ctx, 1))
 
 	assert.Equal(t, []int{1}, fake.takeRaw(1), "the item was pushed")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestPushBatchClosedAfterFirstChunk(t *testing.T) {
@@ -590,7 +590,7 @@ func TestPushBatchClosedAfterFirstChunk(t *testing.T) {
 	assert.Equal(t, 2, pushed, "only the first chunk")
 	assert.Equal(t, 1, fake.callCount(callEnqueueBurst), "no chunk after the close")
 	assert.Equal(t, sequence(0, 2), fake.takeRaw(2))
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 // TestPushBatchClosedBetweenChunks closes the queue and cancels ctx after the first chunk's wake
@@ -611,7 +611,7 @@ func TestPushBatchClosedBetweenChunks(t *testing.T) {
 	assert.Equal(t, 2, pushed, "only the first chunk")
 	assert.Equal(t, 1, fake.callCount(callEnqueueBurst), "no chunk after the close")
 	assert.Equal(t, sequence(0, 2), fake.takeRaw(2))
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 // TestPushBatchWakesAfterFirstChunk checks that the wake comes right after the first chunk
@@ -636,7 +636,7 @@ func TestPushBatchWakesAfterFirstChunk(t *testing.T) {
 	queue.consumers.leavePolling(mustNotPeek(t))
 	queue.consumers.putWaiter(consumer)
 	assert.Equal(t, sequence(0, 5), fake.takeRaw(5))
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 // TestPushBatchWakesAfterPartialMove checks that the wake comes right after a burst moves part
@@ -662,7 +662,7 @@ func TestPushBatchWakesAfterPartialMove(t *testing.T) {
 	queue.consumers.leavePolling(mustNotPeek(t))
 	queue.consumers.putWaiter(consumer)
 	assert.Equal(t, sequence(0, 2), fake.takeRaw(2))
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 // TestPushBatchRetryIgnoresDoneContext checks that the rest of a partly pushed chunk is not a
@@ -677,7 +677,7 @@ func TestPushBatchRetryIgnoresDoneContext(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 4, pushed)
 	assert.Equal(t, sequence(0, 4), fake.takeRaw(4))
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 // TestPushBatchWaitsMidChunk checks that a chunk that moves part of its items and then finds no
@@ -698,7 +698,7 @@ func TestPushBatchWaitsMidChunk(t *testing.T) {
 		assert.Same(t, ErrClosedDuringPush, result.err)
 		assert.Equal(t, 2, result.pushed)
 		assert.Equal(t, sequence(0, 4), fake.takeRaw(4))
-		requireIdleQueue(t, queue)
+		assertIdleQueue(t, queue)
 	})
 }
 
@@ -741,6 +741,6 @@ func TestPushWokenByWaitingConsumer(t *testing.T) {
 		require.NoError(t, result.err)
 		assert.Equal(t, []int{1}, result.items)
 		assert.Equal(t, []int{2}, fake.takeRaw(1))
-		requireIdleQueue(t, queue)
+		assertIdleQueue(t, queue)
 	})
 }

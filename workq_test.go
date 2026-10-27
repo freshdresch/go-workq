@@ -72,10 +72,10 @@ func engineLimits(t *testing.T, eng engine[int]) (maxEnqueue int, maxDequeue int
 	}
 }
 
-func requireIdleQueue(t *testing.T, queue *Queue[int]) {
+func assertIdleQueue(t *testing.T, queue *Queue[int]) {
 	t.Helper()
-	requireIdleSide(t, &queue.consumers)
-	requireIdleSide(t, &queue.producers)
+	assertIdleSide(t, &queue.consumers)
+	assertIdleSide(t, &queue.producers)
 }
 
 func TestNewSelectsEngine(t *testing.T) {
@@ -107,7 +107,7 @@ func TestNewSelectsEngine(t *testing.T) {
 				maxEnqueue, maxDequeue := engineLimits(t, queue.engine)
 				assert.Equal(t, queue.maxPushBatch, maxEnqueue, "engine enqueue limit")
 				assert.Equal(t, queue.maxReceiveBatch, maxDequeue, "engine dequeue limit")
-				requireIdleQueue(t, queue)
+				assertIdleQueue(t, queue)
 			})
 		}
 	}
@@ -124,7 +124,7 @@ func TestNewDefaults(t *testing.T) {
 		assert.Equal(t, wantBatch, queue.maxReceiveBatch, "receive limit, capacity %d", capacity)
 		assert.Equal(t, defaultConsumerWait(), queue.consumerWait, "capacity %d", capacity)
 		assert.Equal(t, defaultProducerWait(), queue.producerWait, "capacity %d", capacity)
-		requireIdleQueue(t, queue)
+		assertIdleQueue(t, queue)
 	}
 }
 
@@ -139,7 +139,7 @@ func TestNewSingleProcDisablesSpins(t *testing.T) {
 
 	assert.Equal(t, WaitStrategy{Spins: 0, Yields: 6, NeverPark: true}, queue.consumerWait)
 	assert.Equal(t, WaitStrategy{Spins: 0, Yields: 8}, queue.producerWait)
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestNewErrors(t *testing.T) {
@@ -265,7 +265,7 @@ func TestNewValidatesFinalValues(t *testing.T) {
 		t.Run(finalCase.name, func(t *testing.T) {
 			queue, err := New[int](64, finalCase.options...)
 			require.NoError(t, err)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }

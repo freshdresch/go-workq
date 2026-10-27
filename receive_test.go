@@ -84,7 +84,7 @@ func TestTryReceiveZeroLength(t *testing.T) {
 			received, err = queue.TryReceive(dst)
 			assert.NoError(t, err)
 			assert.Equal(t, []int{1}, dst[:received], "the item is still queued")
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -115,7 +115,7 @@ func TestCloseDrainsRemainingItems(t *testing.T) {
 				assert.Same(t, ErrClosed, err, "len(dst) %d", len(dst))
 				assert.Zero(t, received, "len(dst) %d", len(dst))
 			}
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -138,7 +138,7 @@ func TestCloseWakesParkedConsumer(t *testing.T) {
 			assert.True(t, queue.producers.load().closed(), "producer side closed")
 			queue.consumers.leaveList(consumer, false, mustNotPeek(t))
 			queue.consumers.putWaiter(consumer)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -162,7 +162,7 @@ func TestTryReceiveWakesParkedProducer(t *testing.T) {
 				requireToken(t, producer)
 				queue.producers.leavePolling(mustNotPeek(t))
 				queue.producers.putWaiter(producer)
-				requireIdleQueue(t, queue)
+				assertIdleQueue(t, queue)
 			})
 		}
 	}
@@ -190,7 +190,7 @@ func TestTryReceiveAllocs(t *testing.T) {
 			require.NoError(t, receiveErr)
 			assert.Zero(t, allocs)
 			assert.Equal(t, tryTestCapacity, receivedTotal)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -223,7 +223,7 @@ func TestTryReceiveDrainsItemPushedDuringClose(t *testing.T) {
 	received, err = queue.TryReceive(dst)
 	assert.Same(t, ErrClosed, err)
 	assert.Zero(t, received)
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestTryReceiveDrainCheckWakesParkedProducer(t *testing.T) {
@@ -254,7 +254,7 @@ func TestTryReceiveDrainCheckWakesParkedProducer(t *testing.T) {
 	requireToken(t, producer)
 	queue.producers.leavePolling(mustNotPeek(t))
 	queue.producers.putWaiter(producer)
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 var errHandler = errors.New("test handler failed")
@@ -355,7 +355,7 @@ func TestReceiveClosedDrainedBeatsDoneContext(t *testing.T) {
 
 			assert.Same(t, ErrClosed, err)
 			assert.Zero(t, received)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -374,7 +374,7 @@ func TestConsumeDoneContextBeatsClosedDrained(t *testing.T) {
 			})
 
 			assert.Same(t, context.Canceled, err)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -398,7 +398,7 @@ func TestConsumeDrainsAfterClose(t *testing.T) {
 
 			assert.NoError(t, err)
 			assert.Equal(t, sequence(0, 40), received)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -424,7 +424,7 @@ func TestConsumeWrapsHandlerError(t *testing.T) {
 			assert.EqualError(t, err, "workq: handler: test handler failed")
 			assert.NotSame(t, errHandler, err, "wrapped")
 			assert.Equal(t, 1, handlerCalls, "the first error stops Consume")
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -444,7 +444,7 @@ func TestReceiveParkedUntilClose(t *testing.T) {
 				result := awaitResult(t, results)
 				assert.Same(t, ErrClosed, result.err)
 				assert.Zero(t, result.received)
-				requireIdleQueue(t, queue)
+				assertIdleQueue(t, queue)
 			})
 		})
 	}
@@ -466,7 +466,7 @@ func TestConsumeParkedUntilClose(t *testing.T) {
 				queue.Close()
 
 				assert.NoError(t, awaitConsume(t, results))
-				requireIdleQueue(t, queue)
+				assertIdleQueue(t, queue)
 			})
 		})
 	}
@@ -502,8 +502,8 @@ func TestConsumeClearsBufferWhileWaiting(t *testing.T) {
 				assert.Equal(t, []*int{nil, nil}, batch, "the used part of the buffer")
 				cancel()
 				assert.Same(t, context.Canceled, awaitConsume(t, results))
-				requireIdleSide(t, &queue.consumers)
-				requireIdleSide(t, &queue.producers)
+				assertIdleSide(t, &queue.consumers)
+				assertIdleSide(t, &queue.producers)
 			})
 		})
 	}
@@ -533,7 +533,7 @@ func TestConsumeNeverPark(t *testing.T) {
 			assert.Zero(t, queue.consumers.load().parked(), "parked")
 			cancel()
 			assert.Same(t, context.Canceled, awaitConsume(t, results))
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -561,7 +561,7 @@ func TestReceiveAllocs(t *testing.T) {
 			require.NoError(t, receiveErr)
 			assert.Zero(t, allocs)
 			assert.Equal(t, tryTestCapacity, receivedTotal)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -581,7 +581,7 @@ func TestReceiveReturnsItemsWithDoneContext(t *testing.T) {
 
 			assert.NoError(t, err)
 			assert.Equal(t, sequence(0, 3), dst[:received])
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -609,7 +609,7 @@ func TestReceiveZeroLength(t *testing.T) {
 			received, err = queue.TryReceive(dst)
 			assert.NoError(t, err)
 			assert.Equal(t, sequence(0, 3), dst[:received], "the items are still queued")
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -634,7 +634,7 @@ func TestReceiveWakesParkedProducer(t *testing.T) {
 				requireToken(t, producer)
 				queue.producers.leavePolling(mustNotPeek(t))
 				queue.producers.putWaiter(producer)
-				requireIdleQueue(t, queue)
+				assertIdleQueue(t, queue)
 			})
 		}
 	}
@@ -660,7 +660,7 @@ func TestConsumeWakesParkedProducer(t *testing.T) {
 			requireToken(t, producer)
 			queue.producers.leavePolling(mustNotPeek(t))
 			queue.producers.putWaiter(producer)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }

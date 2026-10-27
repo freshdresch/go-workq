@@ -315,7 +315,7 @@ func runStress(
 		checkReceivedExactlyOnce(t, run)
 	}
 	assert.Empty(t, run.outOfOrder, "items that arrived out of their producer's order")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 // usesReceive reports whether a consumer runs a Receive loop rather than Consume. Half of

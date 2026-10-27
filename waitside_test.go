@@ -45,14 +45,14 @@ func checkWaitSide(t *testing.T, side *waitSide, wantPollers uint32) {
 	}
 }
 
-// requireIdleSide fails the test unless no caller is registered or parked on the side.
-func requireIdleSide(t *testing.T, side *waitSide) {
+// assertIdleSide fails the test unless no caller is registered or parked on the side.
+func assertIdleSide(t *testing.T, side *waitSide) {
 	t.Helper()
 	side.mu.Lock()
 	defer side.mu.Unlock()
-	require.Zero(t, side.load()&^closedFlag, "word apart from closed")
-	require.Nil(t, side.oldest, "oldest")
-	require.Nil(t, side.newest, "newest")
+	assert.Zero(t, side.load()&^closedFlag, "word apart from closed")
+	assert.Nil(t, side.oldest, "oldest")
+	assert.Nil(t, side.newest, "newest")
 }
 
 // visibleItems stands in for the engine in the model tests: it counts the items a dequeue can
@@ -250,7 +250,7 @@ func TestWaitSideParkWhileClosing(t *testing.T) {
 
 		side.leavePolling(items.peek)
 		assert.True(t, side.load().closed())
-		requireIdleSide(t, &side)
+		assertIdleSide(t, &side)
 		checkWaitSide(t, &side, 0)
 	})
 
@@ -270,7 +270,7 @@ func TestWaitSideParkWhileClosing(t *testing.T) {
 		assertUnlisted(t, caller)
 		assertNoToken(t, caller)
 		assert.True(t, side.load().closed())
-		requireIdleSide(t, &side)
+		assertIdleSide(t, &side)
 		checkWaitSide(t, &side, 0)
 	})
 }
@@ -448,7 +448,7 @@ func TestWaitSideClosedWakeCheck(t *testing.T) {
 	assertCounts(t, &side, 1, 0)
 
 	side.leavePolling(items.peek)
-	requireIdleSide(t, &side)
+	assertIdleSide(t, &side)
 	checkWaitSide(t, &side, 0)
 }
 

@@ -62,7 +62,7 @@ func TestEngineZeroLengthBurstIsFresh(t *testing.T) {
 			assert.Equal(t, 0, enqueued, "zero-length enqueue moved items")
 			assert.Equal(t, moved, free, "free after %d were taken", moved)
 
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -109,7 +109,7 @@ func TestEngineShortBurstMovesEverything(t *testing.T) {
 
 				dequeueAll(t, eng, 2*moved, engineTestCapacity-moved)
 				dequeueAll(t, eng, 100, moved)
-				requireIdleQueue(t, queue)
+				assertIdleQueue(t, queue)
 			})
 		}
 	}
@@ -127,7 +127,7 @@ func TestEngineDequeueAfterFailedDequeue(t *testing.T) {
 			assert.NoError(t, err, "dequeue after pushes that followed a failed dequeue")
 			assert.Equal(t, 0, value)
 
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }

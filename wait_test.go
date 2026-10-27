@@ -147,7 +147,7 @@ func TestReceiveWaitItemDuringLastPoll(t *testing.T) {
 		require.NoError(t, result.err)
 		assert.Equal(t, []int{7}, result.items)
 		assert.Equal(t, 2, fake.callCount(callDequeue), "the yield poll and the extra attempt")
-		requireIdleQueue(t, queue)
+		assertIdleQueue(t, queue)
 	})
 }
 
@@ -165,7 +165,7 @@ func TestReceiveWaitItemDuringExtraAttempt(t *testing.T) {
 		require.NoError(t, result.err)
 		assert.Equal(t, []int{7}, result.items)
 		assert.Equal(t, 2, fake.callCount(callDequeue), "the extra attempt and the woken poll")
-		requireIdleQueue(t, queue)
+		assertIdleQueue(t, queue)
 	})
 }
 
@@ -202,7 +202,7 @@ func TestReceiveWaitWokenPollsFirst(t *testing.T) {
 			"woken consumer polls registered",
 		)
 		assert.Zero(t, wordAtSecondDequeue.parked(), "woken consumer polls before it enlists")
-		requireIdleQueue(t, queue)
+		assertIdleQueue(t, queue)
 	})
 }
 
@@ -220,7 +220,7 @@ func TestReceiveWaitCancelParked(t *testing.T) {
 		result := awaitResult(t, results)
 		assert.Same(t, context.Canceled, result.err)
 		assert.Zero(t, result.received)
-		requireIdleQueue(t, queue)
+		assertIdleQueue(t, queue)
 	})
 }
 
@@ -239,7 +239,7 @@ func TestReceiveWaitCancelYielding(t *testing.T) {
 	assert.Same(t, context.Canceled, result.err)
 	assert.Zero(t, result.received)
 	assert.Equal(t, 3, fake.callCount(callDequeue), "returned from the third yield-phase poll")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestReceiveWaitClosedBeatsContext(t *testing.T) {
@@ -264,7 +264,7 @@ func TestReceiveWaitClosedBeatsContext(t *testing.T) {
 
 			assert.Same(t, ErrClosed, result.err)
 			assert.Zero(t, result.received)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -284,7 +284,7 @@ func TestReceiveWaitClosedWhileParked(t *testing.T) {
 		assert.Same(t, ErrClosed, result.err)
 		assert.Zero(t, result.received)
 		assert.Equal(t, 2, fake.callCount(callDequeue), "the extra attempt and the drain check")
-		requireIdleQueue(t, queue)
+		assertIdleQueue(t, queue)
 	})
 }
 
@@ -299,7 +299,7 @@ func TestReceiveWaitDrainsItemPushedDuringClose(t *testing.T) {
 	require.NoError(t, result.err)
 	assert.Equal(t, []int{7}, result.items)
 	assert.Equal(t, 2, fake.callCount(callDequeue), "the yield poll and the drain check")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestReceiveWaitWokenSeesClosed(t *testing.T) {
@@ -326,7 +326,7 @@ func TestReceiveWaitWokenSeesClosed(t *testing.T) {
 		assert.Same(t, ErrClosed, err, "second call")
 		assert.Zero(t, received, "second call")
 		assert.Zero(t, queue.consumers.load().pollers(), "pollers")
-		requireIdleQueue(t, queue)
+		assertIdleQueue(t, queue)
 	})
 }
 
@@ -381,7 +381,7 @@ func requireReceiveWaitWakesProducer(t *testing.T, queue *Queue[int]) {
 	requireToken(t, producer)
 	queue.producers.leavePolling(mustNotPeek(t))
 	queue.producers.putWaiter(producer)
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 // neverParkLastPoll is the attempt at which the NeverPark tests act, after several empty polls.
@@ -441,7 +441,7 @@ func TestReceiveWaitNeverParkItem(t *testing.T) {
 			)
 			require.NoError(t, result.err)
 			assert.Equal(t, []int{7}, result.items)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -458,7 +458,7 @@ func TestReceiveWaitNeverParkCancel(t *testing.T) {
 			)
 			assert.Same(t, context.Canceled, result.err)
 			assert.Zero(t, result.received)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -475,7 +475,7 @@ func TestReceiveWaitNeverParkClose(t *testing.T) {
 			)
 			assert.Same(t, ErrClosed, result.err)
 			assert.Zero(t, result.received)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -493,7 +493,7 @@ func TestReceiveWaitSpinClosedBeforeCall(t *testing.T) {
 	assert.Same(t, ErrClosed, result.err)
 	assert.Zero(t, result.received)
 	assert.Equal(t, 1, fake.callCount(callDequeue), "only the drain attempt")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestReceiveWaitSpinCanceledBeforeCall(t *testing.T) {
@@ -508,7 +508,7 @@ func TestReceiveWaitSpinCanceledBeforeCall(t *testing.T) {
 	assert.Same(t, context.Canceled, result.err)
 	assert.Zero(t, result.received)
 	assert.Zero(t, fake.callCount(callDequeue), "ctx is checked before the first poll")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestReceiveWaitSpinDrainsItemClosedBeforeCall(t *testing.T) {
@@ -526,7 +526,7 @@ func TestReceiveWaitSpinDrainsItemClosedBeforeCall(t *testing.T) {
 	received, err := queue.receiveWait(ctx, make([]int, 1), nil, nil)
 	assert.Same(t, ErrClosed, err, "second call")
 	assert.Zero(t, received, "second call")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestReceiveWaitSpinChecksContextEvery64Polls(t *testing.T) {
@@ -545,7 +545,7 @@ func TestReceiveWaitSpinChecksContextEvery64Polls(t *testing.T) {
 	assert.Same(t, context.Canceled, result.err)
 	assert.Zero(t, result.received)
 	assert.Equal(t, 64, fake.callCount(callDequeue), "the check before poll 65 saw the cancel")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 // newClearOnYield returns a slice of non-nil pointers, as the part of Consume's buffer that its
@@ -579,8 +579,8 @@ func TestReceiveWaitClearsOnYield(t *testing.T) {
 	assert.Same(t, &item, dst[0])
 	assert.Equal(t, uint32(1), wordAtYieldPoll.pollers(), "the poll ran registered")
 	assert.Equal(t, []*int{nil, nil}, atYieldPoll, "cleared once the consumer registered")
-	requireIdleSide(t, &queue.consumers)
-	requireIdleSide(t, &queue.producers)
+	assertIdleSide(t, &queue.consumers)
+	assertIdleSide(t, &queue.producers)
 }
 
 func TestReceiveWaitSpinKeepsClearOnYield(t *testing.T) {
@@ -600,8 +600,8 @@ func TestReceiveWaitSpinKeepsClearOnYield(t *testing.T) {
 	assert.Equal(t, 1, received)
 	assert.Same(t, &item, dst[0])
 	assert.Equal(t, want, clearOnYield, "untouched when the spin phase finds an item")
-	requireIdleSide(t, &queue.consumers)
-	requireIdleSide(t, &queue.producers)
+	assertIdleSide(t, &queue.consumers)
+	assertIdleSide(t, &queue.producers)
 }
 
 // TestReceiveWaitCancelThenCloseParked cancels and then closes with no wait in between. The
@@ -628,7 +628,7 @@ func TestReceiveWaitCancelThenCloseParked(t *testing.T) {
 			result := awaitResult(t, results)
 			require.Same(t, ErrClosed, result.err, "repetition %d", repetition)
 			require.Zero(t, result.received, "repetition %d", repetition)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -655,7 +655,7 @@ func TestReceiveWaitExtraAttemptLeavesItemsWakesWaiter(t *testing.T) {
 		queue.consumers.leavePolling(mustNotPeek(t))
 		queue.consumers.putWaiter(other)
 		assert.Equal(t, []int{3}, fake.takeRaw(1))
-		requireIdleQueue(t, queue)
+		assertIdleQueue(t, queue)
 	})
 }
 
@@ -691,7 +691,7 @@ func TestReceiveWaitRemovedCallerHandsOff(t *testing.T) {
 	queue.consumers.leavePolling(mustNotPeek(t))
 	queue.consumers.putWaiter(other)
 	assert.Equal(t, []int{3}, fake.takeRaw(1))
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestReceiveWaitOwnWaiter(t *testing.T) {
@@ -718,7 +718,7 @@ func TestReceiveWaitOwnWaiter(t *testing.T) {
 		assert.Nil(t, own.prev, "prev")
 		assert.Nil(t, own.next, "next")
 		assert.Empty(t, own.token, "token")
-		requireIdleQueue(t, queue)
+		assertIdleQueue(t, queue)
 	})
 }
 
@@ -872,7 +872,7 @@ func TestPushWaitPartialExtraAttempt(t *testing.T) {
 	assert.Equal(t, 2, result.pushed)
 	assert.Equal(t, 1, fake.callCount(callEnqueueBurst), "only the extra attempt")
 	assert.Equal(t, []int{4, 5, 6}, fake.takeRaw(3))
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestPushWaitClosedWhileYielding(t *testing.T) {
@@ -891,7 +891,7 @@ func TestPushWaitClosedWhileYielding(t *testing.T) {
 			assert.Same(t, closedCase.wantErr, result.err)
 			assert.Zero(t, result.pushed)
 			assert.Equal(t, 3, fake.callCount(callEnqueue), "returned from the third attempt")
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -912,7 +912,7 @@ func TestPushWaitClosedWhileParked(t *testing.T) {
 				assert.Same(t, closedCase.wantErr, result.err)
 				assert.Zero(t, result.pushed)
 				assert.Equal(t, 1, fake.callCount(callEnqueue), "only the extra attempt")
-				requireIdleQueue(t, queue)
+				assertIdleQueue(t, queue)
 			})
 		})
 	}
@@ -943,7 +943,7 @@ func TestPushWaitClosedDuringMovingAttempt(t *testing.T) {
 			assert.Same(t, ErrClosedDuringPush, result.err)
 			assert.Equal(t, 1, result.pushed)
 			requirePushedItem(t, fake)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -969,7 +969,7 @@ func TestPushWaitClosedBeatsContext(t *testing.T) {
 
 			assert.Same(t, ErrClosed, result.err)
 			assert.Zero(t, result.pushed)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -1012,7 +1012,7 @@ func requirePushWaitWakesConsumer(t *testing.T, queue *Queue[int], fake *scripte
 	requireToken(t, consumer)
 	queue.consumers.leavePolling(mustNotPeek(t))
 	queue.consumers.putWaiter(consumer)
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestPushWaitCancelParked(t *testing.T) {
@@ -1028,7 +1028,7 @@ func TestPushWaitCancelParked(t *testing.T) {
 		result := awaitPushResult(t, results)
 		assert.Same(t, context.Canceled, result.err)
 		assert.Zero(t, result.pushed)
-		requireIdleQueue(t, queue)
+		assertIdleQueue(t, queue)
 	})
 }
 
@@ -1046,7 +1046,7 @@ func TestPushWaitCancelYielding(t *testing.T) {
 	assert.Same(t, context.Canceled, result.err)
 	assert.Zero(t, result.pushed)
 	assert.Equal(t, 3, fake.callCount(callEnqueue), "returned from the third yield-phase attempt")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 // TestPushWaitCancelThenCloseParked cancels and then closes with no wait in between. The first
@@ -1072,7 +1072,7 @@ func TestPushWaitCancelThenCloseParked(t *testing.T) {
 			result := awaitPushResult(t, results)
 			require.Same(t, ErrClosed, result.err, "repetition %d", repetition)
 			require.Zero(t, result.pushed, "repetition %d", repetition)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -1114,7 +1114,7 @@ func TestPushWaitCancelThenCloseMidway(t *testing.T) {
 				assert.Same(t, testCase.wantErr, result.err)
 				assert.Zero(t, result.pushed)
 				assert.True(t, finishedMidway, "producer finished between done and closed")
-				requireIdleQueue(t, queue)
+				assertIdleQueue(t, queue)
 			})
 		})
 	}
@@ -1152,7 +1152,7 @@ func TestPushWaitWokenPollsFirst(t *testing.T) {
 			"woken producer attempts registered",
 		)
 		assert.Zero(t, wordAtSecondEnqueue.parked(), "woken producer attempts before it enlists")
-		requireIdleQueue(t, queue)
+		assertIdleQueue(t, queue)
 	})
 }
 
@@ -1173,7 +1173,7 @@ func TestPushWaitWokenFindsRoom(t *testing.T) {
 		require.NoError(t, result.err)
 		assert.Equal(t, 1, result.pushed)
 		requirePushedItem(t, fake)
-		requireIdleQueue(t, queue)
+		assertIdleQueue(t, queue)
 	})
 }
 
@@ -1196,7 +1196,7 @@ func TestPushWaitExtraAttemptLeavesRoomWakesWaiter(t *testing.T) {
 	requireToken(t, other)
 	queue.producers.leavePolling(mustNotPeek(t))
 	queue.producers.putWaiter(other)
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 // TestPushWaitPooledWaiterLeftClean records each waiter the producer parks with, through a park
@@ -1225,7 +1225,7 @@ func TestPushWaitPooledWaiterLeftClean(t *testing.T) {
 			assert.Nil(t, parked.next, "next, park %d", i+1)
 			assert.Empty(t, parked.token, "token, park %d", i+1)
 		}
-		requireIdleQueue(t, queue)
+		assertIdleQueue(t, queue)
 	})
 }
 
@@ -1283,7 +1283,7 @@ func TestPushWaitNeverParkRoom(t *testing.T) {
 			)
 			require.NoError(t, result.err)
 			assert.Equal(t, 1, result.pushed)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -1300,7 +1300,7 @@ func TestPushWaitNeverParkCancel(t *testing.T) {
 			)
 			assert.Same(t, context.Canceled, result.err)
 			assert.Zero(t, result.pushed)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -1317,7 +1317,7 @@ func TestPushWaitNeverParkClose(t *testing.T) {
 			)
 			assert.Same(t, ErrClosed, result.err)
 			assert.Zero(t, result.pushed)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -1336,7 +1336,7 @@ func TestPushWaitSpinClosedBeforeCall(t *testing.T) {
 			assert.Same(t, closedCase.wantErr, result.err)
 			assert.Zero(t, result.pushed)
 			assert.Zero(t, fake.callCount(callEnqueue), "closed is seen before the first attempt")
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -1352,7 +1352,7 @@ func TestPushWaitSpinCanceledBeforeCall(t *testing.T) {
 	assert.Same(t, context.Canceled, result.err)
 	assert.Zero(t, result.pushed)
 	assert.Zero(t, fake.callCount(callEnqueue), "ctx is checked before the first attempt")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestPushWaitSpinChecksContextEvery64Polls(t *testing.T) {
@@ -1370,7 +1370,7 @@ func TestPushWaitSpinChecksContextEvery64Polls(t *testing.T) {
 	assert.Same(t, context.Canceled, result.err)
 	assert.Zero(t, result.pushed)
 	assert.Equal(t, 64, fake.callCount(callEnqueue), "the check before attempt 65 saw the cancel")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 func TestPushWaitClosedBeforeRegister(t *testing.T) {
@@ -1385,7 +1385,7 @@ func TestPushWaitClosedBeforeRegister(t *testing.T) {
 			assert.Same(t, closedCase.wantErr, result.err)
 			assert.Zero(t, result.pushed)
 			assert.Zero(t, fake.callCount(callEnqueue), "register saw closed")
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -1437,7 +1437,7 @@ func TestPushWaitClosedAtEnlist(t *testing.T) {
 	assert.Same(t, ErrClosed, err)
 	assert.Zero(t, pushed)
 	assert.Equal(t, 1, fake.callCount(callEnqueue), "no extra attempt")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 // TestPushWaitClosedBeforeRegisteredAttempt closes the queue between two yield-phase attempts,
@@ -1451,7 +1451,7 @@ func TestPushWaitClosedBeforeRegisteredAttempt(t *testing.T) {
 	assert.Same(t, ErrClosed, err)
 	assert.Zero(t, pushed)
 	assert.Equal(t, 1, fake.callCount(callEnqueue), "no second attempt")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 // TestReceiveWaitClosedAtEnlist closes the queue after the last yield-phase poll, so enlist
@@ -1466,7 +1466,7 @@ func TestReceiveWaitClosedAtEnlist(t *testing.T) {
 	assert.Same(t, ErrClosed, err)
 	assert.Zero(t, received)
 	assert.Equal(t, 2, fake.callCount(callDequeue), "the yield poll and the drain check")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 // TestReceiveWaitClosedBeforeRegisteredPoll closes the queue between two yield-phase polls, so
@@ -1481,7 +1481,7 @@ func TestReceiveWaitClosedBeforeRegisteredPoll(t *testing.T) {
 	assert.Same(t, ErrClosed, err)
 	assert.Zero(t, received)
 	assert.Equal(t, 2, fake.callCount(callDequeue), "the first poll and the drain check")
-	requireIdleQueue(t, queue)
+	assertIdleQueue(t, queue)
 }
 
 // The Leave polling peek tests park another waiter by hand on the waiting side and check that
@@ -1564,7 +1564,7 @@ func TestPushWaitLeavePollingWakesWaiter(t *testing.T) {
 			requireToken(t, other)
 			queue.producers.leavePolling(mustNotPeek(t))
 			queue.producers.putWaiter(other)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
@@ -1599,7 +1599,7 @@ func TestReceiveWaitLeavePollingWakesWaiter(t *testing.T) {
 			requireToken(t, other)
 			queue.consumers.leavePolling(mustNotPeek(t))
 			queue.consumers.putWaiter(other)
-			requireIdleQueue(t, queue)
+			assertIdleQueue(t, queue)
 		})
 	}
 }
