@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "workq",
     srcs = [
+        "consumer_wake.go",
         "doc.go",
         "engine.go",
         "push.go",
@@ -25,6 +26,7 @@ go_test(
     name = "workq_test",
     srcs = [
         "consumer_handoff_test.go",
+        "consumer_wake_test.go",
         "engine_test.go",
         "example_test.go",
         "fake_engine_test.go",

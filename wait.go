@@ -115,12 +115,7 @@ func (q *Queue[T]) pollRegistered(
 	}
 	if received = q.dequeueAttempt(dst); received > 0 {
 		q.producers.wakeCheck()
-		if q.consumers.leavePolling(q.peekItems) {
-			if q.hooks.beforeConsumerHandoffYield != nil {
-				q.hooks.beforeConsumerHandoffYield()
-			}
-			runtime.Gosched()
-		}
+		q.leaveConsumerPolling()
 		return received, true, nil
 	}
 	// This load, not the one before the attempt, is the one that orders the drain check after
@@ -130,7 +125,7 @@ func (q *Queue[T]) pollRegistered(
 		return received, true, err
 	}
 	if isDone(ctx) {
-		q.consumers.leavePolling(q.peekItems)
+		q.leaveConsumerPolling()
 		return 0, true, ctx.Err()
 	}
 	return 0, false, nil
@@ -158,26 +153,21 @@ func (q *Queue[T]) parkForItems(
 	// the last poll found no parked waiter to wake, so only this attempt can see it.
 	if received = q.dequeueAttempt(dst); received > 0 {
 		q.producers.wakeCheck()
-		if q.consumers.leaveList(caller, true, q.peekItems) {
-			if q.hooks.beforeConsumerHandoffYield != nil {
-				q.hooks.beforeConsumerHandoffYield()
-			}
-			runtime.Gosched()
-		}
+		q.leaveConsumerList(caller, true)
 		return received, true, nil
 	}
 	select {
 	case <-caller.token:
 		return 0, false, nil
 	case <-ctx.Done():
-		q.consumers.leaveList(caller, false, q.peekItems)
+		q.leaveConsumerList(caller, false)
 		if q.consumers.load().closed() {
 			received, err = q.drainCheck(dst)
 			return received, true, err
 		}
 		return 0, true, ctx.Err()
 	case <-q.done:
-		q.consumers.leaveList(caller, false, q.peekItems)
+		q.leaveConsumerList(caller, false)
 		received, err = q.drainCheck(dst)
 		return received, true, err
 	}
@@ -185,7 +175,7 @@ func (q *Queue[T]) parkForItems(
 
 // leavePollingAndDrain is the exit of a registered consumer that saw closed.
 func (q *Queue[T]) leavePollingAndDrain(dst []T) (int, error) {
-	q.consumers.leavePolling(q.peekItems)
+	q.leaveConsumerPolling()
 	return q.drainCheck(dst)
 }
 
@@ -377,7 +367,7 @@ func (q *Queue[T]) parkForRoom(
 // ErrClosedDuringPush if the push raced Close. It must run before the producer takes its own
 // side's mutex to leave the wait, and the producer must leave before it returns the error.
 func (q *Queue[T]) consumerWakeCheck() error {
-	if q.consumers.wakeCheck() {
+	if q.wakeConsumersAfterPublication() {
 		return ErrClosedDuringPush
 	}
 	return nil

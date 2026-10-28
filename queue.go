@@ -20,6 +20,7 @@ type Queue[T any] struct {
 	engine          engine[T]
 	maxPushBatch    int
 	maxReceiveBatch int
+	consumerWakeCap uint32
 	consumerWait    WaitStrategy
 	producerWait    WaitStrategy
 	done            chan struct{}
@@ -33,8 +34,8 @@ type Queue[T any] struct {
 // testHooks lets tests act at points where no engine call runs. Tests set them, and production
 // code never does, so each is nil outside tests.
 type testHooks struct {
-	// beforeConsumerHandoffYield observes a slow successful receive after its token handoff
-	// and cleanup, immediately before the scheduler opportunity.
+	// beforeConsumerHandoffYield detects regressions that restore a held-batch yield.
+	// Successful acquisitions must never call it.
 	beforeConsumerHandoffYield func()
 	// afterCloseDone runs in Close after done is closed and before the producer side is marked
 	// closed, with no mutex held.
@@ -92,7 +93,12 @@ func checkWaitStrategy(side string, strategy WaitStrategy) error {
 func newQueue[T any](engine engine[T], cfg config) *Queue[T] {
 	consumerWait := cfg.consumerWait
 	producerWait := cfg.producerWait
-	if runtime.GOMAXPROCS(0) == 1 {
+	procs := runtime.GOMAXPROCS(0)
+	wakeCap := max(1, min(procs, engine.Capacity()))
+	if cfg.singleConsumer {
+		wakeCap = 1
+	}
+	if procs == 1 {
 		consumerWait.Spins = 0
 		producerWait.Spins = 0
 	}
@@ -100,6 +106,7 @@ func newQueue[T any](engine engine[T], cfg config) *Queue[T] {
 		engine:          engine,
 		maxPushBatch:    cfg.maxPushBatch,
 		maxReceiveBatch: cfg.maxReceiveBatch,
+		consumerWakeCap: uint32(wakeCap),
 		consumerWait:    consumerWait,
 		producerWait:    producerWait,
 		done:            make(chan struct{}),

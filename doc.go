@@ -47,10 +47,10 @@
 // queue usually stays full for a while. A consumer that must react quickly to sparse items may
 // want to spin longer.
 //
-// A successful receive in the registered wait path yields once before returning its batch if
-// its cleanup sent another consumer a wake token. Cleanup and the producer wake check finish
-// first. This offers a scheduling opportunity without promising handler order or wake latency.
-// Fast and spin successes, TryReceive, and cancellation or drain exits add no such yield.
+// Consumer wakes target the visible backlog in receive batches, capped by capacity and the
+// construction-time GOMAXPROCS. A declared single consumer uses one-at-a-time wakes. This cap
+// counts registered pollers, not handlers. Successful acquisition adds no explicit handoff
+// yield. Handler order and activation latency remain unspecified.
 //
 // # Shutdown
 //

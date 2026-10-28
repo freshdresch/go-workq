@@ -45,9 +45,10 @@ func defaultProducerWait() WaitStrategy {
 // error that wraps ErrInvalidWaitStrategy.
 //
 // New reads runtime.GOMAXPROCS once, and with GOMAXPROCS at 1 the queue treats Spins as 0. That
-// value can go stale if the program changes GOMAXPROCS later, or if Go 1.25 or later adjusts it
-// when a container's CPU limit changes. A stale value affects only how much a caller spins,
-// never correctness.
+// value and the consumer wake cap can go stale if the program changes GOMAXPROCS later, or if
+// Go 1.25 or later adjusts it
+// when a container's CPU limit changes. Staleness affects spinning and consumer fanout, never
+// correctness.
 type WaitStrategy struct {
 	// Spins is the number of empty polls before the first yield.
 	Spins int

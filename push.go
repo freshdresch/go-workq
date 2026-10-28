@@ -42,7 +42,7 @@ func (q *Queue[T]) Push(ctx context.Context, item T) error {
 		_, err := q.pushWait(ctx, attempt, 0)
 		return err
 	}
-	if q.consumers.wakeCheck() {
+	if q.wakeConsumersAfterPublication() {
 		return ErrClosedDuringPush
 	}
 	return nil
@@ -131,7 +131,7 @@ func (q *Queue[T]) pushChunk(
 		enqueued, _ := q.engine.EnqueueBurst(chunk[pushed:])
 		if enqueued > 0 {
 			pushed += enqueued
-			if q.consumers.wakeCheck() {
+			if q.wakeConsumersAfterPublication() {
 				return pushed, ErrClosedDuringPush
 			}
 			continue
@@ -167,7 +167,7 @@ func (q *Queue[T]) TryPush(item T) error {
 	if err := q.engine.Enqueue(item); err != nil {
 		return ErrFull
 	}
-	if q.consumers.wakeCheck() {
+	if q.wakeConsumersAfterPublication() {
 		return ErrClosedDuringPush
 	}
 	return nil
@@ -202,7 +202,7 @@ func (q *Queue[T]) TryPushBatch(items []T) (pushed int, err error) {
 		enqueued, _ := q.engine.EnqueueBurst(chunk)
 		if enqueued > 0 {
 			pushed += enqueued
-			if q.consumers.wakeCheck() {
+			if q.wakeConsumersAfterPublication() {
 				return pushed, ErrClosedDuringPush
 			}
 		}

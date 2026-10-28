@@ -145,12 +145,11 @@ type WaitStrategy struct {
 }
 ```
 
-A successful receive in the registered wait path calls `runtime.Gosched` once before returning
-its batch if its cleanup sent another consumer a wake token. This includes the extra dequeue
-after enlist. The producer wake check and all wait cleanup finish first. The scheduling
-opportunity promises neither handler order nor a maximum activation delay. Fast and spin
-successes, `TryReceive`, producers, cancellation exits, and closure/drain exits add no such yield.
-The wait strategy's yields remain independent.
+When consumers are parked, publication and registered-consumer cleanup can wake a group sized
+for the visible backlog and receive batch limit. The group targets at most the smaller of
+capacity and the construction-time `GOMAXPROCS`. A declared single consumer retains one-at-a-time
+wakes. These targets count registered pollers, not handlers, and promise neither handler order
+nor activation latency. Successful acquisition adds no explicit handoff yield.
 
 `New` rejects a negative `Spins` or `Yields` with an error that wraps `ErrInvalidWaitStrategy`.
 Zero is valid for both. The zero value, `WaitStrategy{}`, parks at once after the first empty
@@ -162,7 +161,8 @@ queue treats `Spins` as 0, as `sync.Mutex` does. Reading it on every wait is not
 because `runtime.GOMAXPROCS` takes the global scheduler lock even when it only reads. A program
 that changes `GOMAXPROCS` after `New` keeps the old choice. Since Go 1.25 the runtime also
 changes `GOMAXPROCS` on its own when a container's CPU limit changes, so the choice can go stale
-without the program doing anything. That affects how much a caller spins, never correctness.
+without the program doing anything. That affects spinning and the consumer wake cap, never
+correctness.
 
 Each side has its own strategy, set with `WithConsumerWait` and `WithProducerWait`. Consumers
 wait when the queue is empty, which is the steady state when producers are the bottleneck.

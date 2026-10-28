@@ -21,7 +21,7 @@ func (word sideWord) parked() uint32  { return uint32((word >> 32) & countMask) 
 func (word sideWord) closed() bool    { return word&closedFlag != 0 }
 
 // needsWake reports whether no registered poller is left to find new items while some waiter
-// is parked, which is the only state in which a wake is owed.
+// is parked. Consumer groups may additionally replenish while pollers remain.
 func (word sideWord) needsWake() bool {
 	return word.pollers() == 0 && word.parked() > 0
 }
@@ -50,6 +50,9 @@ type waitSide struct {
 	oldest *waiter
 	newest *waiter
 	pool   sync.Pool
+	// Tests force count races and early recipient exits without scheduler timing.
+	beforeGroupCAS  func()
+	afterGroupToken func()
 }
 
 // getWaiter returns a waiter that is unlisted, with nil links and an empty channel.
@@ -166,21 +169,26 @@ func (side *waitSide) unlink(caller *waiter) {
 // count taken before it can miss an item made visible between the count and the decrement.
 // It reports whether its cleanup sent a wake token.
 func (side *waitSide) leavePolling(peek func() bool) bool {
-	var left sideWord
+	return side.leavePollingWith(func(left sideWord) bool {
+		if left.needsWake() && peek() {
+			return side.wakeOne()
+		}
+		return false
+	})
+}
+
+// leavePollingWith drops the registration before cleanup samples engine visibility.
+func (side *waitSide) leavePollingWith(cleanup func(sideWord) bool) bool {
 	for {
 		word := side.load()
 		if word.pollers() == 0 {
 			panic("workq: leavePolling without a registered poller")
 		}
-		left = word - onePoller
+		left := word - onePoller
 		if side.compareAndSwap(word, left) {
-			break
+			return cleanup(left)
 		}
 	}
-	if left.needsWake() && peek() {
-		return side.wakeOne()
-	}
-	return false
 }
 
 // enlistPosition chooses an end of the wait list without changing wake selection.
@@ -238,11 +246,26 @@ func (side *waitSide) enlist(caller *waiter, position enlistPosition) (closed bo
 // so it takes the token (I3) and leaves polling (I2). Both paths report whether they sent
 // another caller a token after completing cleanup.
 func (side *waitSide) leaveList(caller *waiter, movedItems bool, peek func() bool) bool {
+	return side.leaveListWith(caller, movedItems, func(word sideWord) bool {
+		if word.needsWake() && peek() {
+			return side.wakeOne()
+		}
+		return false
+	})
+}
+
+// leaveListWith drains a selected caller's token before releasing its registration.
+// A still-listed caller runs cleanup only after an extra attempt moved items.
+func (side *waitSide) leaveListWith(
+	caller *waiter,
+	movedItems bool,
+	cleanup func(sideWord) bool,
+) bool {
 	side.mu.Lock()
 	if !caller.listed {
 		side.mu.Unlock()
 		<-caller.token
-		return side.leavePolling(peek)
+		return side.leavePollingWith(cleanup)
 	}
 	side.unlink(caller)
 	for {
@@ -255,8 +278,8 @@ func (side *waitSide) leaveList(caller *waiter, movedItems bool, peek func() boo
 		}
 	}
 	side.mu.Unlock()
-	if movedItems && side.load().needsWake() && peek() {
-		return side.wakeOne()
+	if movedItems {
+		return cleanup(side.load())
 	}
 	return false
 }
@@ -273,5 +296,44 @@ func (side *waitSide) setClosedLocked() (first bool) {
 		if side.compareAndSwap(word, word|closedFlag) {
 			return true
 		}
+	}
+}
+
+// wakeGroup transfers one bounded group before any recipient can release its registration.
+// The target stays fixed across CAS retries and recipients never refill this invocation.
+func (side *waitSide) wakeGroup(target uint32) bool {
+	side.mu.Lock()
+	defer side.mu.Unlock()
+	for {
+		word := side.load()
+		if word.parked() == 0 || word.pollers() >= target {
+			return false
+		}
+		if sideWord(target) > countMask {
+			panic("workq: consumer wake target exceeds count limit")
+		}
+		count := min(word.parked(), target-word.pollers())
+		transfer := sideWord(count)
+		if transfer > countMask-sideWord(word.pollers()) {
+			panic("workq: consumer wake group exceeds count limit")
+		}
+		if side.beforeGroupCAS != nil {
+			side.beforeGroupCAS()
+		}
+		if !side.compareAndSwap(word, word+transfer-transfer*oneParked) {
+			continue
+		}
+		for range count {
+			woken := side.removeForWake()
+			select {
+			case woken.token <- struct{}{}:
+				if side.afterGroupToken != nil {
+					side.afterGroupToken()
+				}
+			default:
+				panic("workq: waiter already holds a wake token")
+			}
+		}
+		return true
 	}
 }
