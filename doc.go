@@ -47,6 +47,11 @@
 // queue usually stays full for a while. A consumer that must react quickly to sparse items may
 // want to spin longer.
 //
+// A successful receive in the registered wait path yields once before returning its batch if
+// its cleanup sent another consumer a wake token. Cleanup and the producer wake check finish
+// first. This offers a scheduling opportunity without promising handler order or wake latency.
+// Fast and spin successes, TryReceive, and cancellation or drain exits add no such yield.
+//
 // # Shutdown
 //
 // Close follows the rule for closing a Go channel. Call it only after every producer call has

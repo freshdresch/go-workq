@@ -102,32 +102,34 @@ func (side *waitSide) wakeCheck() (closed bool) {
 	return word.closed()
 }
 
-// wakeOne is the design's Wake one procedure, taking mu around wakeOneLocked.
-func (side *waitSide) wakeOne() {
+// wakeOne is the design's Wake one procedure, taking mu around wakeOneLocked. It reports
+// whether it sent a token, after releasing mu.
+func (side *waitSide) wakeOne() bool {
 	side.mu.Lock()
-	side.wakeOneLocked()
+	woke := side.wakeOneLocked()
 	side.mu.Unlock()
+	return woke
 }
 
 // wakeOneLocked is the design's Wake one procedure and requires mu held. It moves one waiter
 // from parked to pollers in a single compare-and-swap, so the woken consumer is registered
 // before it runs and concurrent wake checks see a poller and skip (I2). It removes the waiter
 // in the same critical section (I1) and only then sends its token (I3), so the send never
-// blocks. A retry that finds a registered poller does nothing.
-func (side *waitSide) wakeOneLocked() {
+// blocks. It reports true only after the send. A retry that finds a poller reports false.
+func (side *waitSide) wakeOneLocked() bool {
 	for {
 		word := side.load()
 		if !word.needsWake() {
-			return
+			return false
 		}
 		if side.compareAndSwap(word, word+onePoller-oneParked) {
 			woken := side.removeForWake()
 			select {
 			case woken.token <- struct{}{}:
+				return true
 			default:
 				panic("workq: waiter already holds a wake token")
 			}
-			return
 		}
 	}
 }
@@ -162,7 +164,8 @@ func (side *waitSide) unlink(caller *waiter) {
 // leavePolling is the design's Leave polling procedure, which a registered consumer runs on
 // every exit from polling except parking (I2). Peek runs only after the decrement, because a
 // count taken before it can miss an item made visible between the count and the decrement.
-func (side *waitSide) leavePolling(peek func() bool) {
+// It reports whether its cleanup sent a wake token.
+func (side *waitSide) leavePolling(peek func() bool) bool {
 	var left sideWord
 	for {
 		word := side.load()
@@ -175,15 +178,24 @@ func (side *waitSide) leavePolling(peek func() bool) {
 		}
 	}
 	if left.needsWake() && peek() {
-		side.wakeOne()
+		return side.wakeOne()
 	}
+	return false
 }
 
+// enlistPosition chooses an end of the wait list without changing wake selection.
+type enlistPosition bool
+
+const (
+	atNewest enlistPosition = false
+	atOldest enlistPosition = true
+)
+
 // enlist is the list step of the design's Park procedure. It moves the registered caller from
-// pollers to parked and appends it to the list in one critical section (I1, I2). When closed
+// pollers to parked and links it at position in one critical section (I1, I2). When closed
 // is set, it returns true and changes nothing, so the caller is still registered and must run
 // leavePolling.
-func (side *waitSide) enlist(caller *waiter) (closed bool) {
+func (side *waitSide) enlist(caller *waiter, position enlistPosition) (closed bool) {
 	side.mu.Lock()
 	defer side.mu.Unlock()
 	for {
@@ -198,13 +210,23 @@ func (side *waitSide) enlist(caller *waiter) (closed bool) {
 			break
 		}
 	}
-	caller.prev = side.newest
-	if side.newest == nil {
+	if position == atOldest {
+		caller.next = side.oldest
+		if side.oldest == nil {
+			side.newest = caller
+		} else {
+			side.oldest.prev = caller
+		}
 		side.oldest = caller
 	} else {
-		side.newest.next = caller
+		caller.prev = side.newest
+		if side.newest == nil {
+			side.oldest = caller
+		} else {
+			side.newest.next = caller
+		}
+		side.newest = caller
 	}
-	side.newest = caller
 	caller.listed = true
 	return false
 }
@@ -213,14 +235,14 @@ func (side *waitSide) enlist(caller *waiter) (closed bool) {
 // waiting for a reason other than a token. MovedItems reports whether its extra dequeue attempt
 // moved items. A caller still listed was chosen by no waker, so it owes a wake only when it
 // took items and more remain. A caller already removed was registered as a poller by its waker,
-// so it takes the token (I3) and leaves polling (I2).
-func (side *waitSide) leaveList(caller *waiter, movedItems bool, peek func() bool) {
+// so it takes the token (I3) and leaves polling (I2). Both paths report whether they sent
+// another caller a token after completing cleanup.
+func (side *waitSide) leaveList(caller *waiter, movedItems bool, peek func() bool) bool {
 	side.mu.Lock()
 	if !caller.listed {
 		side.mu.Unlock()
 		<-caller.token
-		side.leavePolling(peek)
-		return
+		return side.leavePolling(peek)
 	}
 	side.unlink(caller)
 	for {
@@ -234,8 +256,9 @@ func (side *waitSide) leaveList(caller *waiter, movedItems bool, peek func() boo
 	}
 	side.mu.Unlock()
 	if movedItems && side.load().needsWake() && peek() {
-		side.wakeOne()
+		return side.wakeOne()
 	}
+	return false
 }
 
 // setClosedLocked requires mu held and sets closed, so that enlist under the same mutex either

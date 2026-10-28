@@ -18,9 +18,10 @@ import "context"
 //
 // A producer that can wait should get a ctx that its owner cancels when the consumers stop. A
 // producer that waits after every consumer has returned, without a Close, waits until its ctx
-// is done. Waiting has no fairness guarantee. A woken producer that finds no room waits again
-// behind the others, and producers that have not started waiting can take the room first, so
-// under sustained load a Push can wait without bound.
+// is done. Waiting has no fairness guarantee. A woken producer that makes no progress parks
+// again at the oldest end until an attempt pushes items. A later wait starts at the newest
+// end. Producers that have not started waiting can take the room first, so under sustained
+// load a Push can wait without bound.
 //
 // A handler must not block in Push on its own queue, because if every consumer's handler does
 // so, nothing drains it. TryPush describes the pattern that works.

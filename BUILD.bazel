@@ -24,9 +24,11 @@ go_library(
 go_test(
     name = "workq_test",
     srcs = [
+        "consumer_handoff_test.go",
         "engine_test.go",
         "example_test.go",
         "fake_engine_test.go",
+        "producer_priority_test.go",
         "protocol_stress_test.go",
         "push_test.go",
         "race_off_test.go",

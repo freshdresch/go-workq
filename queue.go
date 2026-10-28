@@ -33,6 +33,9 @@ type Queue[T any] struct {
 // testHooks lets tests act at points where no engine call runs. Tests set them, and production
 // code never does, so each is nil outside tests.
 type testHooks struct {
+	// beforeConsumerHandoffYield observes a slow successful receive after its token handoff
+	// and cleanup, immediately before the scheduler opportunity.
+	beforeConsumerHandoffYield func()
 	// afterCloseDone runs in Close after done is closed and before the producer side is marked
 	// closed, with no mutex held.
 	afterCloseDone func()

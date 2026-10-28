@@ -115,7 +115,12 @@ func (q *Queue[T]) pollRegistered(
 	}
 	if received = q.dequeueAttempt(dst); received > 0 {
 		q.producers.wakeCheck()
-		q.consumers.leavePolling(q.peekItems)
+		if q.consumers.leavePolling(q.peekItems) {
+			if q.hooks.beforeConsumerHandoffYield != nil {
+				q.hooks.beforeConsumerHandoffYield()
+			}
+			runtime.Gosched()
+		}
 		return received, true, nil
 	}
 	// This load, not the one before the attempt, is the one that orders the drain check after
@@ -145,7 +150,7 @@ func (q *Queue[T]) parkForItems(
 		caller = q.consumers.getWaiter()
 		defer q.consumers.putWaiter(caller)
 	}
-	if q.consumers.enlist(caller) {
+	if q.consumers.enlist(caller, atNewest) {
 		received, err = q.leavePollingAndDrain(dst)
 		return received, true, err
 	}
@@ -153,7 +158,12 @@ func (q *Queue[T]) parkForItems(
 	// the last poll found no parked waiter to wake, so only this attempt can see it.
 	if received = q.dequeueAttempt(dst); received > 0 {
 		q.producers.wakeCheck()
-		q.consumers.leaveList(caller, true, q.peekItems)
+		if q.consumers.leaveList(caller, true, q.peekItems) {
+			if q.hooks.beforeConsumerHandoffYield != nil {
+				q.hooks.beforeConsumerHandoffYield()
+			}
+			runtime.Gosched()
+		}
 		return received, true, nil
 	}
 	select {
@@ -228,7 +238,7 @@ func (q *Queue[T]) pushWait(
 		if q.producerWait.NeverPark {
 			return q.pushWithoutParking(ctx, attempt, pushedBefore)
 		}
-		pushed, finished, err = q.parkForRoom(ctx, attempt, pushedBefore)
+		pushed, finished, err = q.parkForRoom(ctx, attempt, pushedBefore, woken)
 		if finished {
 			return pushed, err
 		}
@@ -325,17 +335,23 @@ func (q *Queue[T]) attemptRegistered(
 }
 
 // parkForRoom is the design's Park procedure for a registered producer. If the wait is not
-// finished, a token arrived, and the waker has registered the producer again.
+// finished, a token arrived, and the waker has registered the producer again. Woken keeps
+// unsuccessful retries ahead of callers that stayed parked until this wait makes progress.
 func (q *Queue[T]) parkForRoom(
 	ctx context.Context,
 	attempt func() int,
 	pushedBefore int,
+	woken bool,
 ) (pushed int, finished bool, err error) {
 	// Every return below comes after the waiter has left the list and its token, if any, has
 	// been received, so it is ready for reuse.
 	caller := q.producers.getWaiter()
 	defer q.producers.putWaiter(caller)
-	if q.producers.enlist(caller) {
+	position := atNewest
+	if woken {
+		position = atOldest
+	}
+	if q.producers.enlist(caller, position) {
 		return 0, true, q.leavePollingClosed(pushedBefore)
 	}
 	// The extra attempt must come after enlist. Room freed before enlist but after the last

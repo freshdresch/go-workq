@@ -51,7 +51,7 @@ func parkProducer(t *testing.T, side *waitSide) *waiter {
 	t.Helper()
 	caller := side.getWaiter()
 	require.False(t, side.register(), "register")
-	require.False(t, side.enlist(caller), "enlist")
+	require.False(t, side.enlist(caller, atNewest), "enlist")
 	return caller
 }
 

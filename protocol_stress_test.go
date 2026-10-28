@@ -149,7 +149,7 @@ func awaitProgress(
 	caller := side.getWaiter()
 	defer side.putWaiter(caller)
 	for {
-		if side.enlist(caller) {
+		if side.enlist(caller, atNewest) {
 			t.Error("enlist saw closed, which the stress test never sets")
 			side.leavePolling(peek)
 			return false

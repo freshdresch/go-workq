@@ -145,6 +145,13 @@ type WaitStrategy struct {
 }
 ```
 
+A successful receive in the registered wait path calls `runtime.Gosched` once before returning
+its batch if its cleanup sent another consumer a wake token. This includes the extra dequeue
+after enlist. The producer wake check and all wait cleanup finish first. The scheduling
+opportunity promises neither handler order nor a maximum activation delay. Fast and spin
+successes, `TryReceive`, producers, cancellation exits, and closure/drain exits add no such yield.
+The wait strategy's yields remain independent.
+
 `New` rejects a negative `Spins` or `Yields` with an error that wraps `ErrInvalidWaitStrategy`.
 Zero is valid for both. The zero value, `WaitStrategy{}`, parks at once after the first empty
 poll. It never busy-waits, so a caller who passes it by mistake gets slow wakes, not a spinning

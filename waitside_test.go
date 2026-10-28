@@ -71,7 +71,7 @@ func parkConsumer(t *testing.T, side *waitSide) *waiter {
 	t.Helper()
 	caller := side.getWaiter()
 	require.False(t, side.register(), "register")
-	require.False(t, side.enlist(caller), "enlist")
+	require.False(t, side.enlist(caller, atNewest), "enlist")
 	return caller
 }
 
@@ -128,7 +128,7 @@ func TestWaitSideStalledProducer(t *testing.T) {
 	requireToken(t, consumer)
 	assertCounts(t, &side, 1, 0)
 	require.False(t, items.peek(), "B's item is visible before A completes")
-	require.False(t, side.enlist(consumer))
+	require.False(t, side.enlist(consumer, atNewest))
 
 	// A completes, so A's and B's items become visible together.
 	items.count.Store(2)
@@ -242,7 +242,7 @@ func TestWaitSideParkWhileClosing(t *testing.T) {
 		side.mu.Unlock()
 		before := side.load()
 
-		assert.True(t, side.enlist(caller))
+		assert.True(t, side.enlist(caller, atNewest))
 		assert.Equal(t, before, side.load(), "enlist on a closed word")
 		assertUnlisted(t, caller)
 		assert.True(t, side.register(), "register on a closed word")
@@ -503,7 +503,7 @@ func TestWaitSideUnderflowPanics(t *testing.T) {
 		var side waitSide
 		caller := side.getWaiter()
 		assert.PanicsWithValue(t, "workq: enlist without a registered poller", func() {
-			side.enlist(caller)
+			side.enlist(caller, atNewest)
 		})
 		assertUnlisted(t, caller)
 		checkWaitSide(t, &side, 0)
