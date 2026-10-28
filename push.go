@@ -14,7 +14,7 @@ import "context"
 // Once Close has been called, Push returns ErrClosed and pushes nothing. If it is waiting when
 // Close runs, it returns ErrClosed. If it pushed item but raced Close, it returns
 // ErrClosedDuringPush, and item may not be delivered. When the queue is closed and ctx is also
-// done, the closed error wins.
+// done, the closed error wins if closure is visible at the final observation after wait cleanup.
 //
 // A producer that can wait should get a ctx that its owner cancels when the consumers stop. A
 // producer that waits after every consumer has returned, without a Close, waits until its ctx
@@ -64,7 +64,7 @@ func (q *Queue[T]) Push(ctx context.Context, item T) error {
 // and ErrClosed if it pushed nothing, and its count with ErrClosedDuringPush if it pushed
 // earlier chunks. If it pushed items but raced Close, it returns their count with
 // ErrClosedDuringPush, and those items may not be delivered. When the queue is closed and ctx
-// is also done, the closed error wins.
+// is also done, the closed error wins if closure is visible at the final observation after cleanup.
 //
 // A producer that can wait should get a ctx that its owner cancels when the consumers stop. A
 // producer that waits after every consumer has returned, without a Close, waits until its ctx
@@ -86,7 +86,7 @@ func (q *Queue[T]) PushBatch(ctx context.Context, items []T) (pushed int, err er
 	}
 	for pushed < len(items) {
 		if pushed > 0 {
-			if err := q.checkBetweenChunks(ctx); err != nil {
+			if err := q.checkBetweenChunks(ctx, pushed); err != nil {
 				return pushed, err
 			}
 		}
@@ -101,8 +101,8 @@ func (q *Queue[T]) PushBatch(ctx context.Context, items []T) (pushed int, err er
 }
 
 // checkBetweenChunks is PushBatch's check before each chunk after the first. It loads the
-// consumer-side word for closed before it checks ctx, so a closed queue wins over a done ctx.
-func (q *Queue[T]) checkBetweenChunks(ctx context.Context) error {
+// consumer-side word before it checks ctx, and observes closure again after ctx is done.
+func (q *Queue[T]) checkBetweenChunks(ctx context.Context, pushedBefore int) error {
 	if q.hooks.beforeChunkCheck != nil {
 		q.hooks.beforeChunkCheck()
 	}
@@ -112,7 +112,7 @@ func (q *Queue[T]) checkBetweenChunks(ctx context.Context) error {
 		return ErrClosedDuringPush
 	}
 	if isDone(ctx) {
-		return ctx.Err()
+		return q.producerContextError(ctx, pushedBefore)
 	}
 	return nil
 }

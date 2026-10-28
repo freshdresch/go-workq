@@ -16,7 +16,7 @@ const contextCheckInterval = 64
 //
 // Own is the waiter the caller keeps across calls, as Consume does, or nil to take one from the
 // pool for each park. ClearOnYield is cleared before the consumer registers, so a waiting
-// Consume does not keep its last batch reachable, and may be nil.
+// Consume does not keep earlier batches reachable, and may be nil.
 func (q *Queue[T]) receiveWait(
 	ctx context.Context,
 	dst []T,
@@ -248,7 +248,7 @@ func (q *Queue[T]) spinForRoom(
 			return 0, true, closedWhileWaiting(pushedBefore)
 		}
 		if poll%contextCheckInterval == 0 && isDone(ctx) {
-			return 0, true, ctx.Err()
+			return 0, true, q.producerContextError(ctx, pushedBefore)
 		}
 		if pushed = attempt(); pushed > 0 {
 			return pushed, true, q.consumerWakeCheck()
@@ -313,13 +313,13 @@ func (q *Queue[T]) attemptRegistered(
 		q.producers.leavePolling(q.peekRoom)
 		return pushed, true, err
 	}
-	// The closed load comes before the ctx check, so a closed queue wins over a done ctx.
+	// A canceled producer observes consumer-side closure again after leaving polling.
 	if q.producers.load().closed() {
 		return 0, true, q.leavePollingClosed(pushedBefore)
 	}
 	if isDone(ctx) {
 		q.producers.leavePolling(q.peekRoom)
-		return 0, true, ctx.Err()
+		return 0, true, q.producerContextError(ctx, pushedBefore)
 	}
 	return 0, false, nil
 }
@@ -350,14 +350,7 @@ func (q *Queue[T]) parkForRoom(
 		return 0, false, nil
 	case <-ctx.Done():
 		q.producers.leaveList(caller, false, q.peekRoom)
-		// Close closes done before it sets closed on the producer-side word, so only done is
-		// sure to show a Close that is under way, and the closed error must win over ctx.
-		select {
-		case <-q.done:
-			return 0, true, closedWhileWaiting(pushedBefore)
-		default:
-			return 0, true, ctx.Err()
-		}
+		return 0, true, q.producerContextError(ctx, pushedBefore)
 	case <-q.done:
 		q.producers.leaveList(caller, false, q.peekRoom)
 		return 0, true, closedWhileWaiting(pushedBefore)
@@ -387,4 +380,14 @@ func closedWhileWaiting(pushedBefore int) error {
 		return ErrClosed
 	}
 	return ErrClosedDuringPush
+}
+
+// producerContextError selects an error after context completion and wait cleanup. The consumer
+// bit is Close's first publication, so it also covers closure before done or the producer bit.
+// Closure published after this load need not override the context error.
+func (q *Queue[T]) producerContextError(ctx context.Context, pushedBefore int) error {
+	if q.consumers.load().closed() {
+		return closedWhileWaiting(pushedBefore)
+	}
+	return ctx.Err()
 }

@@ -47,8 +47,8 @@ func (q *Queue[T]) Receive(ctx context.Context, dst []T) (received int, err erro
 // batch slice after it returns, because the next batch reuses its memory.
 //
 // Consume allocates one buffer of the receive batch limit and reuses it for every batch. When a
-// wait reaches its yield phase, Consume clears the part of the buffer the last batch used, so a
-// quiet queue does not keep old items reachable.
+// wait reaches its yield phase, Consume clears the whole buffer, so a quiet queue does not keep
+// items from any earlier batch reachable.
 //
 // Consume does not start goroutines. To run several consumers, start a goroutine for each, for
 // example with errgroup. On a queue built with WithSingleConsumer, the one consumer must
@@ -59,12 +59,11 @@ func (q *Queue[T]) Consume(
 ) error {
 	buffer := make([]T, q.maxReceiveBatch)
 	own := newWaiter()
-	lastLength := 0
 	for {
 		if isDone(ctx) {
 			return ctx.Err()
 		}
-		received, err := q.receive(ctx, buffer, own, buffer[:lastLength])
+		received, err := q.receive(ctx, buffer, own, buffer)
 		if errors.Is(err, ErrClosed) {
 			return nil
 		}
@@ -74,7 +73,6 @@ func (q *Queue[T]) Consume(
 		if err := handler(ctx, buffer[:received]); err != nil {
 			return fmt.Errorf("workq: handler: %w", err)
 		}
-		lastLength = received
 	}
 }
 
