@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "consumer_wake.go",
         "diagnostics.go",
+        "diagnostics_endpoint.go",
         "diagnostics_record.go",
         "diagnostics_snapshot.go",
         "doc.go",
@@ -32,6 +33,9 @@ go_test(
         "consumer_wake_test.go",
         "diagnostics_alloc_test.go",
         "diagnostics_engine_test.go",
+        "diagnostics_endpoint_concurrency_test.go",
+        "diagnostics_endpoint_test.go",
+        "diagnostics_endpoint_transfer_test.go",
         "diagnostics_histogram_test.go",
         "diagnostics_layout_test.go",
         "diagnostics_probe_test.go",

@@ -17,8 +17,8 @@ const (
 // DiagnosticsConfig is immutable after construction. Options use their final values.
 type DiagnosticsConfig struct {
 	Mode DiagnosticsMode
-	// Shards defaults to 16 when enabled and zero. Other enabled values must be powers of two
-	// in [1, 256]. Disabled mode requires zero.
+	// Shards defaults to 16 when enabled and zero. Other enabled values must be positive
+	// powers of two whose diagnostic storage fits in int. Disabled mode requires zero.
 	Shards int
 	// TimingSampleEvery selects episodes with probability 1/N. Timing mode defaults to 64.
 	TimingSampleEvery uint32
@@ -294,9 +294,9 @@ func resolveDiagnostics(cfg DiagnosticsConfig) (DiagnosticsConfig, error) {
 	if cfg.Shards == 0 {
 		cfg.Shards = 16
 	}
-	if cfg.Shards < 1 || cfg.Shards > 256 || cfg.Shards&(cfg.Shards-1) != 0 {
+	if cfg.Shards < 1 || cfg.Shards&(cfg.Shards-1) != 0 {
 		return DiagnosticsConfig{}, fmt.Errorf(
-			"shards %d must be a power of two in [1, 256]: %w",
+			"shards %d must be a positive power of two: %w",
 			cfg.Shards, ErrInvalidDiagnostics,
 		)
 	}

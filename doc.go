@@ -43,7 +43,10 @@
 // Diagnostics measure attempts, transfers, waits, wakes, and capacity observations. They do not
 // measure application completion or exact queue depth. Close does not freeze recording. Join
 // all queue callers before collecting final values and reconcile handler outcomes separately.
-// See workq/diagnostics.md in the repository for tuning, sampling, memory, and collection rules.
+// Retain a [DiagnosticsEndpoint] from [Queue.NewDiagnosticsEndpoint] to reuse one recording
+// shard across operations. The constructor example shows producer and consumer endpoints with
+// queue-owned closure and snapshots. See workq/diagnostics.md in the repository for endpoint
+// sharing, tuning, sampling, memory, and collection rules.
 //
 // # Engine selection
 //

@@ -13,12 +13,12 @@ import (
 
 func TestDiagnosticsConfigModesAndShards(t *testing.T) {
 	for _, mode := range []DiagnosticsMode{DiagnosticsCounters, DiagnosticsTiming} {
-		for _, shards := range []int{0, 1, 16, 256} {
+		for _, shards := range []int{0, 1, 16, 256, 512} {
 			t.Run(
 				fmt.Sprintf("mode=%d/shards=%d", mode, shards),
 				func(t *testing.T) {
 					cfg := DiagnosticsConfig{Mode: mode, Shards: shards, CapacitySampleEvery: 7}
-					queue, err := New[int](64, WithDiagnostics(cfg))
+					queue, err := New[int](2, WithDiagnostics(cfg))
 					require.NoError(t, err)
 					require.NotNil(t, queue.diagnostics)
 					if shards == 0 {
@@ -84,7 +84,7 @@ func TestDiagnosticsConfigInvalid(t *testing.T) {
 		{"counter timing", DiagnosticsConfig{Mode: DiagnosticsCounters, TimingSampleEvery: 1}},
 	}
 	for _, mode := range []DiagnosticsMode{DiagnosticsCounters, DiagnosticsTiming} {
-		for _, shards := range []int{-1, 3, 15, 255, 257, 512, int(^uint(0) >> 1)} {
+		for _, shards := range []int{-1, 3, 15, 255, 257, int(^uint(0) >> 1)} {
 			cases = append(
 				cases,
 				struct {

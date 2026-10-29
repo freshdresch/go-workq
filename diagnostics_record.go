@@ -101,9 +101,10 @@ type diagnosticsTimingShard struct {
 }
 
 type diagnostics struct {
-	counters []diagnosticsCounterShard
-	timing   []diagnosticsTimingShard
-	config   DiagnosticsConfig
+	creationTicket atomic.Uint64
+	counters       []diagnosticsCounterShard
+	timing         []diagnosticsTimingShard
+	config         DiagnosticsConfig
 }
 
 // diagnosticsAllocationSize bounds both slices and the descriptor before any allocation.
@@ -265,7 +266,10 @@ func (c *diagnosticsSideCounters) recordRetryToken() {
 }
 
 func (d *diagnostics) chooseRecording() diagnosticsRecording {
-	shard := rand.IntN(len(d.counters))
+	return d.recordingAt(rand.IntN(len(d.counters)))
+}
+
+func (d *diagnostics) recordingAt(shard int) diagnosticsRecording {
 	recording := diagnosticsRecording{
 		counters:            &d.counters[shard],
 		capacitySampleEvery: d.config.CapacitySampleEvery,

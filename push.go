@@ -38,6 +38,10 @@ func (q *Queue[T]) Push(ctx context.Context, item T) error {
 		state = q.diagnostics.chooseRecording()
 		recording = &state
 	}
+	return q.push(ctx, recording, item)
+}
+
+func (q *Queue[T]) push(ctx context.Context, recording *diagnosticsRecording, item T) error {
 	if q.consumers.load().closed() {
 		return ErrClosed
 	}
@@ -98,6 +102,14 @@ func (q *Queue[T]) PushBatch(ctx context.Context, items []T) (pushed int, err er
 		state = q.diagnostics.chooseRecording()
 		recording = &state
 	}
+	return q.pushBatch(ctx, recording, items)
+}
+
+func (q *Queue[T]) pushBatch(
+	ctx context.Context,
+	recording *diagnosticsRecording,
+	items []T,
+) (pushed int, err error) {
 	if q.consumers.load().closed() {
 		return 0, ErrClosed
 	}
@@ -195,6 +207,10 @@ func (q *Queue[T]) TryPush(item T) error {
 		state = q.diagnostics.chooseRecording()
 		recording = &state
 	}
+	return q.tryPush(recording, item)
+}
+
+func (q *Queue[T]) tryPush(recording *diagnosticsRecording, item T) error {
 	if q.consumers.load().closed() {
 		return ErrClosed
 	}
@@ -237,6 +253,13 @@ func (q *Queue[T]) TryPushBatch(items []T) (pushed int, err error) {
 		state = q.diagnostics.chooseRecording()
 		recording = &state
 	}
+	return q.tryPushBatch(recording, items)
+}
+
+func (q *Queue[T]) tryPushBatch(
+	recording *diagnosticsRecording,
+	items []T,
+) (pushed int, err error) {
 	if q.consumers.load().closed() {
 		return 0, ErrClosed
 	}

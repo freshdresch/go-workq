@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -189,81 +190,129 @@ func TestDiagnosticsWakePublicationFloorAndSources(t *testing.T) {
 	assertIdleQueue(t, queue)
 }
 
-func TestDiagnosticsWakeConsumerTokenOwnership(t *testing.T) {
-	for _, extraSuccess := range []bool{false, true} {
-		t.Run(map[bool]string{false: "retry", true: "extra success"}[extraSuccess], func(t *testing.T) {
-			queue, fake, origin, recipient := newDiagnosticsWakeQueue(t)
-			require.False(t, queue.consumers.register(recipient.consumerCounters()))
-			fake.setHooks(func(call engineCall) {
-				if call.kind != callDequeue {
-					return
-				}
-				require.True(t, queue.consumers.wakeOne(origin.consumerCounters()))
-				if extraSuccess {
-					fake.pushRaw(1)
-				}
-			}, nil)
-			received, finished, err := queue.parkForItems(
-				context.Background(),
-				recipient,
-				make([]int, 1),
-				nil,
-			)
-			require.NoError(t, err)
-			assert.Equal(t, extraSuccess, finished)
-			assert.Equal(t, uint64(1), origin.consumerCounters().tokensSent.Load())
-			assert.Zero(t, recipient.consumerCounters().tokensSent.Load())
-			if extraSuccess {
-				assert.Equal(t, 1, received)
-				assert.Equal(t, uint64(1), recipient.consumerCounters().tokensDrainedByCleanup.Load())
-				assert.Zero(t, recipient.consumerCounters().tokensReceivedForRetry.Load())
-			} else {
-				assert.Zero(t, received)
-				assert.Equal(t, uint64(1), recipient.consumerCounters().tokensReceivedForRetry.Load())
-				assert.Zero(t, recipient.consumerCounters().tokensDrainedByCleanup.Load())
-				queue.leaveConsumerPolling(recipient)
-			}
-			assertIdleQueue(t, queue)
-		})
+func TestDiagnosticsWakeEndpointTokenOwnership(t *testing.T) {
+	for _, producer := range []bool{false, true} {
+		for _, cleanup := range []bool{false, true} {
+			t.Run(fmt.Sprintf("producer=%t/cleanup=%t", producer, cleanup), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					queue, fake := newTimingDiagnosticsQueue(t, 1)
+					origin := queue.NewDiagnosticsEndpoint()
+					recipient := queue.NewDiagnosticsEndpoint()
+					kind, side := callDequeue, &queue.consumers
+					if producer {
+						kind, side = callEnqueue, &queue.producers
+						fake.pushRaw(sequence(1, 8)...)
+					}
+					transfer := func() {
+						if producer {
+							count, err := origin.TryReceive(make([]int, 1))
+							require.NoError(t, err)
+							require.Equal(t, 1, count)
+							return
+						}
+						require.NoError(t, origin.TryPush(9))
+					}
+					fake.setHooks(func(call engineCall) {
+						if call.kind != kind {
+							return
+						}
+						if call.count == 2 {
+							transfer()
+						}
+						if !cleanup && (call.count >= 2 && call.count <= 4) {
+							fake.setForceEmpty()
+						}
+					}, nil)
+					result := make(chan error, 1)
+					go func() {
+						if producer {
+							result <- recipient.Push(context.Background(), 10)
+							return
+						}
+						_, err := recipient.Receive(context.Background(), make([]int, 1))
+						result <- err
+					}()
+					transfers := uint64(1)
+					if !cleanup {
+						synctest.Wait()
+						requireParked(t, side, 1)
+						transfer()
+						transfers++
+					}
+					require.NoError(t, <-result)
+					originCounters := &queue.diagnostics.counters[origin.shard].consumer.diagnosticsSideCounters
+					recipientShard := &queue.diagnostics.counters[recipient.shard]
+					recipientCounters := &recipientShard.consumer.diagnosticsSideCounters
+					pushed, received := transfers, uint64(1)
+					if producer {
+						originCounters = &queue.diagnostics.counters[origin.shard].producer.diagnosticsSideCounters
+						recipientCounters = &recipientShard.producer.diagnosticsSideCounters
+						pushed, received = 1, transfers
+					}
+					assert.Equal(t, transfers, originCounters.tokensSent.Load())
+					assert.Zero(t, recipientCounters.tokensSent.Load())
+					assert.Zero(t, originCounters.tokensReceivedForRetry.Load())
+					assert.Zero(t, originCounters.tokensDrainedByCleanup.Load())
+					if cleanup {
+						assert.Equal(t, uint64(1), recipientCounters.tokensDrainedByCleanup.Load())
+						assert.Zero(t, recipientCounters.tokensReceivedForRetry.Load())
+					} else {
+						assert.Equal(t, uint64(2), recipientCounters.tokensReceivedForRetry.Load())
+						assert.Equal(t, uint64(1), recipientCounters.wakeRetryEnds[RetryReparked].Load())
+						assert.Equal(t, uint64(1), recipientCounters.wakeRetryEnds[RetryProgress].Load())
+						if producer {
+							assert.Equal(t, uint64(1), recipientCounters.producerOldestReenlistments.Load())
+						}
+					}
+					snapshot := queue.Diagnostics()
+					assertDiagnosticsConserved(t, snapshot, pushed, received)
+					assert.Equal(t, snapshot.Producer.CapacityEligibleAttempts,
+						snapshot.Producer.CapacityCompletedProbes)
+					assert.Equal(t, snapshot.Consumer.CapacityEligibleAttempts,
+						snapshot.Consumer.CapacityCompletedProbes)
+					assertIdleQueue(t, queue)
+				})
+			})
+		}
 	}
 }
 
-func TestDiagnosticsWakeProducerTokenOwnership(t *testing.T) {
-	for _, extraSuccess := range []bool{false, true} {
-		t.Run(map[bool]string{false: "retry", true: "extra success"}[extraSuccess], func(t *testing.T) {
-			queue, _, origin, recipient := newDiagnosticsWakeQueue(t)
-			require.False(t, queue.producers.register(recipient.producerCounters()))
-			attempt := func(AttemptPhase) int {
-				require.True(t, queue.producers.wakeOne(origin.producerCounters()))
-				if extraSuccess {
-					return 1
-				}
-				return 0
-			}
-			pushed, finished, err := queue.parkForRoom(
-				context.Background(),
-				recipient,
-				attempt,
-				0,
-				false,
-			)
-			require.NoError(t, err)
-			assert.Equal(t, extraSuccess, finished)
-			assert.Equal(t, uint64(1), origin.producerCounters().tokensSent.Load())
-			assert.Zero(t, recipient.producerCounters().tokensSent.Load())
-			if extraSuccess {
-				assert.Equal(t, 1, pushed)
-				assert.Equal(t, uint64(1), recipient.producerCounters().tokensDrainedByCleanup.Load())
-				assert.Zero(t, recipient.producerCounters().tokensReceivedForRetry.Load())
-			} else {
-				assert.Zero(t, pushed)
-				assert.Equal(t, uint64(1), recipient.producerCounters().tokensReceivedForRetry.Load())
-				assert.Zero(t, recipient.producerCounters().tokensDrainedByCleanup.Load())
-				queue.producers.leavePolling(nil, func() bool { return false })
-			}
-			assertIdleQueue(t, queue)
-		})
-	}
+func TestDiagnosticsWakeEndpointConsumerGroup(t *testing.T) {
+	setGOMAXPROCS(t, 4)
+	synctest.Test(t, func(t *testing.T) {
+		queue := newTestQueue(t, newScriptedEngine[int](8),
+			WithConsumerWait(WaitStrategy{}), WithMaxReceiveBatch(1),
+			WithDiagnostics(DiagnosticsConfig{Mode: DiagnosticsCounters, Shards: 4}))
+		origin := queue.NewDiagnosticsEndpoint()
+		results := make(chan error, 3)
+		for range 3 {
+			recipient := queue.NewDiagnosticsEndpoint()
+			go func() {
+				_, err := recipient.Receive(context.Background(), make([]int, 1))
+				results <- err
+			}()
+		}
+		synctest.Wait()
+		requireParked(t, &queue.consumers, 3)
+		count, err := origin.TryPushBatch([]int{1, 2, 3})
+		require.NoError(t, err)
+		require.Equal(t, 3, count)
+		for range 3 {
+			require.NoError(t, <-results)
+		}
+		counters := &queue.diagnostics.counters[origin.shard].consumer
+		assert.Equal(t, uint64(3), counters.tokensSent.Load())
+		assert.Equal(t, uint64(1), counters.wakeTransfers[WakeGroup].Load())
+		assert.Zero(t, counters.tokensReceivedForRetry.Load())
+		for index := 1; index < 4; index++ {
+			recipient := &queue.diagnostics.counters[index].consumer
+			assert.Equal(t, uint64(1), recipient.tokensReceivedForRetry.Load())
+			assert.Equal(t, uint64(1), recipient.wakeRetryEnds[RetryProgress].Load())
+			assert.Zero(t, recipient.tokensSent.Load())
+		}
+		assertDiagnosticsConserved(t, queue.Diagnostics(), 3, 3)
+		assertIdleQueue(t, queue)
+	})
 }
 
 func TestDiagnosticsWakeCloseDoesNotSendTokens(t *testing.T) {

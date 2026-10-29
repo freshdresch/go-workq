@@ -228,3 +228,56 @@ func testDiagnosticsSnapshotLiveClose(
 	}
 	assertDiagnosticsWaitReconciled(t, afterCleanup)
 }
+
+func TestDiagnosticsSnapshotEndpointCloseDrain(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		queue, fake := newTimingDiagnosticsQueue(t, 1)
+		producer := queue.NewDiagnosticsEndpoint()
+		consumer := queue.NewDiagnosticsEndpoint()
+		require.NoError(t, producer.TryPush(1))
+		before := queue.Diagnostics()
+		detached := before
+		loaded := make(chan struct{})
+		resume := make(chan struct{})
+		firstResults := make(chan DiagnosticsSnapshot, 1)
+		go func() {
+			firstResults <- queue.collectDiagnostics(&diagnosticsReductionControl{
+				counters: &queue.diagnostics.counters[producer.shard].producer.diagnosticsSideCounters,
+				loaded:   loaded,
+				resume:   resume,
+			})
+		}()
+		<-loaded
+		require.NoError(t, queue.TryPush(2))
+		require.NoError(t, producer.TryPush(3))
+		queue.Close()
+		count, err := consumer.TryReceive(make([]int, 2))
+		require.NoError(t, err)
+		require.Equal(t, 2, count)
+		count, err = queue.TryReceive(make([]int, 1))
+		require.NoError(t, err)
+		require.Equal(t, 1, count)
+		count, err = consumer.TryReceive(make([]int, 1))
+		require.ErrorIs(t, err, ErrClosed)
+		require.Zero(t, count)
+		calls := fake.recordedCalls()
+		second := queue.Diagnostics()
+		close(resume)
+		first := <-firstResults
+		assert.Equal(t, calls, fake.recordedCalls(), "collectors must not call the engine")
+		assert.Equal(t, detached, before)
+		assert.Equal(t, uint64(1), before.Producer.MovedSize.Sum)
+		assert.Zero(t, before.Consumer.MovedSize.Sum)
+		assert.False(t, before.WaitState.Consumer.Closed)
+		assert.Equal(t, uint64(2), second.Producer.MovedSize.Sum-before.Producer.MovedSize.Sum)
+		assert.Equal(t, uint64(3), second.Consumer.MovedSize.Sum-before.Consumer.MovedSize.Sum)
+		firstNext := queue.Diagnostics()
+		secondNext := queue.Diagnostics()
+		assert.Equal(t, uint64(0), secondNext.Producer.MovedSize.Sum-second.Producer.MovedSize.Sum)
+		assert.Equal(t, uint64(0), secondNext.Consumer.MovedSize.Sum-second.Consumer.MovedSize.Sum)
+		assert.GreaterOrEqual(t, firstNext.Producer.MovedSize.Sum, first.Producer.MovedSize.Sum)
+		assert.Equal(t, calls, fake.recordedCalls())
+		assertDiagnosticsConserved(t, secondNext, 3, 3)
+		assertIdleQueue(t, queue)
+	})
+}

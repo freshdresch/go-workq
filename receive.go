@@ -37,6 +37,14 @@ func (q *Queue[T]) Receive(ctx context.Context, dst []T) (received int, err erro
 		state = q.diagnostics.chooseRecording()
 		recording = &state
 	}
+	return q.receiveBatch(ctx, recording, dst)
+}
+
+func (q *Queue[T]) receiveBatch(
+	ctx context.Context,
+	recording *diagnosticsRecording,
+	dst []T,
+) (int, error) {
 	dst = dst[:min(len(dst), q.maxReceiveBatch)]
 	return q.receive(ctx, recording, dst, nil, nil)
 }
@@ -81,6 +89,14 @@ func (q *Queue[T]) Consume(
 		state = q.diagnostics.chooseRecording()
 		recording = &state
 	}
+	return q.consume(ctx, recording, handler)
+}
+
+func (q *Queue[T]) consume(
+	ctx context.Context,
+	recording *diagnosticsRecording,
+	handler func(ctx context.Context, batch []T) error,
+) error {
 	buffer := make([]T, q.maxReceiveBatch)
 	own := newWaiter()
 	for {
@@ -145,6 +161,13 @@ func (q *Queue[T]) TryReceive(dst []T) (received int, err error) {
 		state = q.diagnostics.chooseRecording()
 		recording = &state
 	}
+	return q.tryReceive(recording, dst)
+}
+
+func (q *Queue[T]) tryReceive(
+	recording *diagnosticsRecording,
+	dst []T,
+) (received int, err error) {
 	dst = dst[:min(len(dst), q.maxReceiveBatch)]
 	if received = q.dequeueAttempt(recording, PhaseInitial, dst); received > 0 {
 		// Closed on the producer side tells a consumer nothing, so only the wake matters here.

@@ -10,6 +10,9 @@ between waiting, rejection, discard, and a submission wait budget.
 Use [queue diagnostics](diagnostics.md) to investigate capacity pressure, batch sizes, polling,
 and wakes. Enable counters or sampled timing at construction with `WithDiagnostics`. Diagnostics
 measure internal queue work. Applications still own completion and handler outcomes.
+For repeated operations, retain a `DiagnosticsEndpoint` to reuse one recording shard. See the
+[endpoint guide](diagnostics.md#retain-an-endpoint-for-repeated-operations) and the runnable
+[producer and consumer example](example_diagnostics_test.go).
 
 ## Ownership and completion
 

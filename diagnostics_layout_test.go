@@ -61,7 +61,8 @@ func TestDiagnosticsLayout(t *testing.T) {
 	assert.Equal(t, uintptr(9728), unsafe.Sizeof(counters))
 	assert.Equal(t, uintptr(3968), unsafe.Sizeof(timing.producer))
 	assert.Equal(t, uintptr(7936), unsafe.Sizeof(timing))
-	assert.Equal(t, uintptr(72), unsafe.Sizeof(diagnostics{}))
+	assert.Equal(t, uintptr(80), unsafe.Sizeof(diagnostics{}))
+	assert.Equal(t, uintptr(16), unsafe.Sizeof(DiagnosticsEndpoint[int]{}))
 	var queue Queue[int]
 	assert.Equal(t, uintptr(816), unsafe.Sizeof(queue))
 	assert.Equal(t, uintptr(32), unsafe.Offsetof(queue.consumerWakeCap))
@@ -90,5 +91,41 @@ func TestDiagnosticsLayoutAllocationOverflow(t *testing.T) {
 		cfg.Shards++
 		_, ok = diagnosticsAllocationSize(cfg)
 		assert.False(t, ok)
+	}
+}
+
+func TestDiagnosticsConfigAllocationPowers(t *testing.T) {
+	for _, mode := range []DiagnosticsMode{DiagnosticsCounters, DiagnosticsTiming} {
+		stride := unsafe.Sizeof(diagnosticsCounterShard{})
+		if mode == DiagnosticsTiming {
+			stride += unsafe.Sizeof(diagnosticsTimingShard{})
+		}
+		maxInt := uintptr(^uint(0) >> 1)
+		limit := (maxInt - unsafe.Sizeof(diagnostics{})) / stride
+		largestAllowed := 1
+		for uintptr(largestAllowed) <= limit/2 {
+			largestAllowed *= 2
+		}
+		cfg := DiagnosticsConfig{Mode: mode, Shards: largestAllowed}
+		resolved, err := resolveDiagnostics(cfg)
+		require.NoError(t, err)
+		assert.Equal(t, largestAllowed, resolved.Shards)
+		size, ok := diagnosticsAllocationSize(cfg)
+		require.True(t, ok)
+		assert.LessOrEqual(t, size, maxInt)
+
+		largestIntPower := int((maxInt + 1) / 2)
+		for _, shards := range []int{largestAllowed * 2, largestIntPower} {
+			cfg.Shards = shards
+			_, ok = diagnosticsAllocationSize(cfg)
+			assert.False(t, ok)
+			_, err = resolveDiagnostics(cfg)
+			require.ErrorIs(t, err, ErrInvalidDiagnostics)
+			queue, err := New[int](3, WithDiagnostics(cfg))
+			assert.Nil(t, queue)
+			require.ErrorIs(t, err, ErrInvalidDiagnostics)
+			assert.NotSame(t, ErrInvalidDiagnostics, err)
+			assert.ErrorContains(t, err, "diagnostics allocation size overflows int")
+		}
 	}
 }

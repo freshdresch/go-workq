@@ -97,3 +97,53 @@ func ExampleQueue_Diagnostics() {
 	// acquired items: 4
 	// application total: 10
 }
+
+func ExampleQueue_NewDiagnosticsEndpoint() {
+	queue, err := workq.New[int](
+		4,
+		workq.WithDiagnostics(workq.DiagnosticsConfig{Mode: workq.DiagnosticsCounters}),
+	)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	producer := queue.NewDiagnosticsEndpoint()
+	consumer := queue.NewDiagnosticsEndpoint()
+	ctx := context.Background()
+
+	// The finite input fits, so this producer can finish before the consumer starts.
+	for _, batch := range [][]int{{1, 2}, {3, 4}} {
+		accepted, pushErr := producer.PushBatch(ctx, batch)
+		if pushErr != nil {
+			queue.Close()
+			fmt.Println("accepted:", accepted, "push error:", pushErr)
+			return
+		}
+	}
+	queue.Close()
+
+	dst := make([]int, 2)
+	var total int
+	for {
+		count, receiveErr := consumer.Receive(ctx, dst)
+		for _, item := range dst[:count] {
+			total += item
+		}
+		if receiveErr == workq.ErrClosed {
+			break
+		}
+		if receiveErr != nil {
+			fmt.Println("receive error:", receiveErr)
+			return
+		}
+	}
+	// Every call and its cleanup finished before this aggregate snapshot.
+	snapshot := queue.Diagnostics()
+	fmt.Println("enqueued items:", snapshot.Producer.MovedSize.Sum)
+	fmt.Println("acquired items:", snapshot.Consumer.MovedSize.Sum)
+	fmt.Println("application total:", total)
+	// Output:
+	// enqueued items: 4
+	// acquired items: 4
+	// application total: 10
+}

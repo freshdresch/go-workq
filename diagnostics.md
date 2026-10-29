@@ -42,9 +42,16 @@ Configuration is immutable. There is no live enable, disable, or reset operation
 | `DiagnosticsCounters` | Every completed event, with optional capacity probes and no clocks |
 | `DiagnosticsTiming` | Counters plus sampled wait and park-select durations |
 
-Enabled `Shards: 0` resolves to 16. Other enabled values must be powers of two from 1 through
-256. A shard is a counter storage block, not a worker identity. Sixteen is a storage default,
-not a performance recommendation.
+Enabled `Shards: 0` resolves to 16. Other enabled values must be positive powers of two.
+There is no 256-shard cap. The shard count and aggregate diagnostic storage must fit the
+platform's `int`. Validation checks the descriptor and both backing arrays before allocation.
+This is a representability check, not a memory budget. A valid configuration can still exceed
+available memory or runtime allocation limits. The library does not recover allocation failures.
+Queue capacity has a separate limit and does not limit shard count.
+
+A shard is a counter storage block, not a worker identity. `Shards` is the total per queue,
+not a count per endpoint or a caller limit. Sixteen is a storage default, not a performance
+recommendation.
 
 In timing mode, `TimingSampleEvery: 0` resolves to 64. A positive value `N` selects each wait
 episode with probability `1/N`. One selects every episode. Counter mode requires this field
@@ -57,6 +64,50 @@ mode requires every auxiliary field to be zero.
 
 [ExampleWithDiagnostics](example_diagnostics_test.go) shows timing with sampled capacity
 probes and prints the resolved defaults. It does not recommend those rates for a workload.
+
+## Retain an endpoint for repeated operations
+
+Create `producer := queue.NewDiagnosticsEndpoint()` once where the application owns a producer.
+Reuse it for later `Push`, `PushBatch`, `TryPush`, or `TryPushBatch` calls. A consumer can retain
+its own endpoint for `Receive`, `TryReceive`, or `Consume`. Retain reusable receive buffers too.
+[ExampleQueue_NewDiagnosticsEndpoint](example_diagnostics_test.go) shows both endpoints and
+keeps closure and aggregate collection on the queue.
+
+Each enabled endpoint has an immutable assignment to one whole shard, including both sides
+and timing storage. Copies keep that assignment. A separate constructor call obtains the next
+assignment. Construction cycles through the queue's shards in atomic ticket order. The first
+`Shards` creations receive distinct assignments, but this is not an active-endpoint uniqueness
+guarantee. With four shards, retain the first endpoint, discard the next three, and create a
+fifth. The first and fifth now share shard zero. Creating an endpoint for every submission
+defeats the intended reuse. The queue neither tracks abandoned endpoints nor balances active ones.
+
+Copies, concurrent calls, excess endpoints, and ordinary queue calls can share shards safely.
+All updates remain atomic and each invocation has separate recording state. Sharing can reduce
+the benefit of stable assignment, but it does not drop events. Ordinary calls still select from
+all shards. One shard means every caller shares it. Snapshots remain aggregate per queue, with
+no per-endpoint identity, fairness, or processing-success measurements.
+
+Endpoint methods follow the corresponding queue methods' ownership, errors, batching, waiting,
+and cleanup contracts. `WithSingleProducer` and `WithSingleConsumer` are queue-wide serialization
+promises across ordinary and endpoint calls together. Endpoints add no serialization and do not
+change engine selection. `Consume` runs the handler on the caller's goroutine. Ordinary `Consume`
+already selects one shard for its whole invocation. An endpoint reuses its assignment across
+invocations, rather than removing a draw from every internal receive.
+
+There is no endpoint close, release, flush, registration, or background activity. The application
+owns goroutines and cancellation. Stop and join producers before `queue.Close()`, then join
+consumers and reconcile their outcomes. Collect final metrics with `queue.Diagnostics()` after
+all calls and cleanup finish. `Capacity`, `Close`, and `Diagnostics` belong to the queue.
+
+An endpoint keeps its queue and queue-owned storage reachable. The queue keeps no references
+to endpoints. Discarding one needs no cleanup and does not reset counters. Closure leaves
+endpoints usable under the existing closed-queue contracts, including draining accepted work.
+Construction is valid for disabled and closed queues and records no metrics. A disabled endpoint
+does not enable recording or allocate diagnostic storage. Construct endpoints through the queue.
+The zero value is unusable, and calling its transfer methods is a programming error.
+
+Endpoint recording retains no contexts, handlers, or buffers after a call returns. Accepted
+payloads and `Consume` buffers keep their existing ownership rules.
 
 ## Collect a sequential series
 
@@ -111,7 +162,8 @@ not prove processing success. Follow the [lifecycle recipes](lifecycle.md).
 Run the executable examples from the repository root:
 
 ```sh
-go test ./workq -run 'ExampleWithDiagnostics|ExampleQueue_Diagnostics' -count=1
+go test ./workq -count=1 \
+  -run 'ExampleWithDiagnostics|ExampleQueue_(Diagnostics|NewDiagnosticsEndpoint)'
 ```
 
 ## Attempts, phases, and waits
@@ -275,28 +327,39 @@ counts observations equal to configured capacity.
 ## Memory and recording cost
 
 Diagnostics storage is bounded by shard count and fixed metric fields. No raw samples,
-per-worker registry, or per-item metadata accumulate. Enabled public calls choose a random
-shard, and `Consume` retains one across its loop. Concurrent calls can collide. More shards
-increase memory and snapshot work and can reduce counter contention. They do not remove it.
+per-worker registry, or per-item metadata accumulate. Enabled ordinary calls choose a random
+shard, and `Consume` retains one across its loop. Endpoint calls reuse their fixed assignment.
+Concurrent calls can collide. More shards increase memory and snapshot work and can reduce
+counter contention. They do not remove it.
 
 For the current amd64 layout, requested type storage in bytes is:
 
 - Disabled diagnostics: zero allocated diagnostic storage.
-- Counter mode: `72 + Shards * 9728`.
-- Timing mode: `72 + Shards * (9728 + 7936)`.
+- Counter mode: `80 + Shards * 9728`.
+- Timing mode: `80 + Shards * (9728 + 7936)`.
 
-The 72 bytes describe the diagnostics descriptor. Each shard includes both sides. At 16 shards,
+The 80 bytes describe the diagnostics descriptor, including the endpoint creation ticket.
+Each shard includes both sides. At 16 shards,
 counters occupy 152 KiB and timing adds 124 KiB, plus the descriptor. The queue itself occupies
 816 bytes on amd64 in every mode. Engine storage, ring payloads, `Consume` buffers, waiter pools,
 and allocator rounding are separate. These are implementation layout figures, not API size
 promises. [Layout tests](diagnostics_layout_test.go) verify them.
 
-Enabled recording adds atomic updates, random selection, histogram work, and cache contention.
+An endpoint value occupies 16 bytes on the current amd64 layout. Constructing a value requires
+no separate library heap allocation. Application storage and goroutine captures follow ordinary
+Go escape rules. Keeping more endpoints costs caller-owned values, not more metric arrays.
+Churn does not grow queue-owned storage. Both storage and snapshot reduction grow linearly with
+`Shards`, while the detached snapshot has fixed size.
+
+Enabled recording adds atomic updates, histogram work, and cache contention. Ordinary calls
+also select a random shard. Endpoint construction adds one atomic ticket update, while endpoint
+transfers use the fixed assignment. Timing and capacity sampling retain their independent draws.
 Snapshots read many cache lines and compete with updates. Timing and probes add their own
 costs. Warmed-path allocation tests establish no extra per-attempt diagnostic allocation, not
 zero construction cost or the absence of ordinary waiter-pool allocations.
 
-Disabled recording performs no metric writes, random draws, extra probes, or clock reads.
+Disabled recording performs no metric writes, ticket updates, random draws, extra probes,
+or clock reads. Ordinary disabled calls do no endpoint selection.
 It still incurs checks, helper calls, larger stack frames, and recording-state initialization.
 The queue layout also grows. A nil diagnostics pointer does not imply zero overhead. Runtime
 performance acceptance requires workload comparisons with the uninstrumented baseline.
