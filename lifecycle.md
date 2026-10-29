@@ -4,6 +4,9 @@ These recipes show how an application owns admission, queue operations, handlers
 Use them with the contracts in [push.go](push.go), [receive.go](receive.go), and
 [queue.go](queue.go). The executable examples use default MPMC queues and integer payloads.
 
+The [observability recipes](observability.md) add counts and latency measurements at these
+application boundaries without changing lifecycle ownership.
+
 ## Stop sources, drain, or abort
 
 Use two independent contexts. `sourceCtx` requests that sources stop admitting new work.

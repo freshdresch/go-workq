@@ -3,6 +3,9 @@
 workq is an in-process work queue. Any number of producers add items, and each item goes to
 exactly one of any number of consumers.
 
+See the [observability recipes](observability.md) for application-owned progress counts,
+latency measurements, and live collection.
+
 ## Example
 
 This program adds 100 numbers to a queue in one `PushBatch` call. Two consumers each double the
