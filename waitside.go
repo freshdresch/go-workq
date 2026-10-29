@@ -37,10 +37,8 @@ func newWaiter() *waiter {
 	return &waiter{token: make(chan struct{}, 1)}
 }
 
-// waitSide is one side of the wakeup protocol in the design's "Waking without losing a wakeup"
-// section. The consumer side holds callers waiting for items, and the producer side holds
-// callers waiting for room. The methods follow the design's procedures and keep invariants I1,
-// I2, and I3.
+// waitSide tracks callers waiting for items or room. See "State and invariants" and
+// "Transitions" in wakeup.md for invariants I1-I3 and their accounting boundaries.
 type waitSide struct {
 	// The padding keeps mu and the list off word's cache line, because producers load word on
 	// every push. A struct that embeds a waitSide must pad before it, too.
@@ -105,8 +103,8 @@ func (side *waitSide) wakeCheck() (closed bool) {
 	return word.closed()
 }
 
-// wakeOne is the design's Wake one procedure, taking mu around wakeOneLocked. It reports
-// whether it sent a token, after releasing mu.
+// wakeOne serializes selection with list cleanup. See "Transitions" in wakeup.md.
+// It reports whether it sent a token, after releasing mu.
 func (side *waitSide) wakeOne() bool {
 	side.mu.Lock()
 	woke := side.wakeOneLocked()
@@ -114,7 +112,7 @@ func (side *waitSide) wakeOne() bool {
 	return woke
 }
 
-// wakeOneLocked is the design's Wake one procedure and requires mu held. It moves one waiter
+// wakeOneLocked requires mu held. See "Transitions" in wakeup.md. It moves one waiter
 // from parked to pollers in a single compare-and-swap, so the woken consumer is registered
 // before it runs and concurrent wake checks see a poller and skip (I2). It removes the waiter
 // in the same critical section (I1) and only then sends its token (I3), so the send never
@@ -164,7 +162,7 @@ func (side *waitSide) unlink(caller *waiter) {
 	caller.listed = false
 }
 
-// leavePolling is the design's Leave polling procedure, which a registered consumer runs on
+// leavePolling releases a registration as described in "Transitions" in wakeup.md. It runs on
 // every exit from polling except parking (I2). Peek runs only after the decrement, because a
 // count taken before it can miss an item made visible between the count and the decrement.
 // It reports whether its cleanup sent a wake token.
@@ -199,7 +197,7 @@ const (
 	atOldest enlistPosition = true
 )
 
-// enlist is the list step of the design's Park procedure. It moves the registered caller from
+// enlist begins parking as described in "Transitions" in wakeup.md. It moves the caller from
 // pollers to parked and links it at position in one critical section (I1, I2). When closed
 // is set, it returns true and changes nothing, so the caller is still registered and must run
 // leavePolling.
@@ -239,8 +237,8 @@ func (side *waitSide) enlist(caller *waiter, position enlistPosition) (closed bo
 	return false
 }
 
-// leaveList is the design's Leave the list procedure, which a parked caller runs when it stops
-// waiting for a reason other than a token. MovedItems reports whether its extra dequeue attempt
+// leaveList handles a parked caller's exit for a reason other than a token. See
+// "Cancellation and close" in wakeup.md. MovedItems reports whether its extra dequeue attempt
 // moved items. A caller still listed was chosen by no waker, so it owes a wake only when it
 // took items and more remain. A caller already removed was registered as a poller by its waker,
 // so it takes the token (I3) and leaves polling (I2). Both paths report whether they sent
@@ -301,6 +299,7 @@ func (side *waitSide) setClosedLocked() (first bool) {
 
 // wakeGroup transfers one bounded group before any recipient can release its registration.
 // The target stays fixed across CAS retries and recipients never refill this invocation.
+// See "Consumer wake groups" in wakeup.md for the target and transfer boundaries.
 func (side *waitSide) wakeGroup(target uint32) bool {
 	side.mu.Lock()
 	defer side.mu.Unlock()

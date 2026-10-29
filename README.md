@@ -287,3 +287,6 @@ For single items without the Disruptor's model, a plain MPMC queue is also faste
 one in xsync, a Go concurrency library. In the [MPMC comparison report](../benchmark/ring/mpmc.md),
 xsync moved a single `int64` in 18.0 ns. `frontier.MPMCQueue` took 24.4 ns with one-element bursts
 and 30.8 ns with `Enqueue` and `Dequeue`, before this library adds its own cost.
+
+Maintainers and contributors can read the [wakeup protocol](wakeup.md) before changing waiting,
+wake selection, cancellation, closure, or an engine.

@@ -9,7 +9,7 @@ import (
 	"github.com/freshdresch/go-data-structures/ring"
 )
 
-// These tests pin assumptions A1 and A4 of the design on each engine as New builds it. Each
+// These tests check A1 and A4 in "Engine assumptions" in wakeup.md on each selected engine. Each
 // test sets the engine's cached view of the other side, either to nothing or to a partial
 // count, before the other side moves. A zero-length burst or a burst that asks for more than
 // the cache shows must then reload and report the fresh count.

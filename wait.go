@@ -9,8 +9,8 @@ import (
 // costs more than a poll.
 const contextCheckInterval = 64
 
-// receiveWait waits for items after a fast-path attempt found none, following the design's
-// "Consumer path". It fills a prefix of dst, which must be non-empty and within the receive batch
+// receiveWait waits after a fast-path attempt found no items. See "How waiting works" in
+// wakeup.md. It fills a prefix of dst, which must be non-empty and within the receive batch
 // limit, and returns how many items it moved, or 0 with ErrClosed once the queue is closed and
 // drained, or 0 with ctx.Err() once ctx is done. A closed queue wins over a done ctx.
 //
@@ -131,7 +131,7 @@ func (q *Queue[T]) pollRegistered(
 	return 0, false, nil
 }
 
-// parkForItems is the design's Park procedure for a registered consumer. If the wait is not
+// parkForItems parks a registered consumer. See "Transitions" in wakeup.md. If the wait is not
 // finished, a token arrived, and the waker has registered the consumer again.
 func (q *Queue[T]) parkForItems(
 	ctx context.Context,
@@ -179,8 +179,8 @@ func (q *Queue[T]) leavePollingAndDrain(dst []T) (int, error) {
 	return q.drainCheck(dst)
 }
 
-// drainCheck is the design's drain check, and it must run after the load that saw closed. That
-// load comes after Close, so this attempt sees every item pushed before Close.
+// drainCheck must run after the observation of closure. See "Cancellation and close" in
+// wakeup.md for the ordering and the requirement that all producer calls finish before Close.
 func (q *Queue[T]) drainCheck(dst []T) (int, error) {
 	if received := q.dequeueAttempt(dst); received > 0 {
 		q.producers.wakeCheck()
@@ -198,8 +198,8 @@ func isDone(ctx context.Context) bool {
 	}
 }
 
-// pushWait waits for room after a fast-path attempt found none, following the design's
-// "Producers waiting for room". Attempt pushes the current chunk, or the single item, and
+// pushWait waits after a fast-path attempt found no room. See "Producer retry priority" in
+// wakeup.md. Attempt pushes the current chunk, or the single item, and
 // returns how many items it moved. PushedBefore is how many items the call pushed before it
 // waited.
 //
@@ -324,7 +324,7 @@ func (q *Queue[T]) attemptRegistered(
 	return 0, false, nil
 }
 
-// parkForRoom is the design's Park procedure for a registered producer. If the wait is not
+// parkForRoom parks a registered producer. See "Transitions" in wakeup.md. If the wait is not
 // finished, a token arrived, and the waker has registered the producer again. Woken keeps
 // unsuccessful retries ahead of callers that stayed parked until this wait makes progress.
 func (q *Queue[T]) parkForRoom(

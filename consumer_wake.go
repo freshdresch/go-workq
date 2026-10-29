@@ -1,6 +1,7 @@
 package workq
 
 // consumerTarget counts receive batches without overflowing available+batch-1.
+// See "Consumer wake groups" in wakeup.md for the target and its limits.
 func (q *Queue[T]) consumerTarget() uint32 {
 	_, available := q.engine.DequeueBurst(nil)
 	if available == 0 {

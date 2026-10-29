@@ -14,7 +14,7 @@ import (
 	"github.com/freshdresch/go-data-structures/ring/frontier"
 )
 
-// engineCase is one row of the design's engine selection table.
+// engineCase covers an engine selection described in "Engine assumptions" in wakeup.md.
 type engineCase struct {
 	name       string
 	options    []Option
