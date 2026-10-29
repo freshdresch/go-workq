@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -52,73 +53,57 @@ func Example_selfFeeding() {
 		fmt.Println(err)
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	_, stopSources := context.WithCancel(context.Background())
+	defer stopSources()
+	abortCtx, cancelAbort := context.WithCancel(context.Background())
+	defer cancelAbort()
+	outcome := &recipeOutcome{stopSources: stopSources, cancelAbort: cancelAbort}
 
-	// The count covers every item from just before its push until a handler finishes it,
-	// including items on a handler's local stack. The owner, this function, holds one count
-	// from the start.
+	// The owner's token prevents zero before every seeder has registered its lifetime.
 	work := &outstandingWork{queue: queue}
 	work.add(1)
-
 	var visitedSum atomic.Int64
-	handler := func(_ context.Context, batch []int) error {
-		stack := append([]int(nil), batch...)
-		for len(stack) > 0 {
-			node := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
+	handler := func(ctx context.Context, batch []int) error {
+		return visitTree(ctx, queue, work, batch, func(_ context.Context, node int) error {
 			visitedSum.Add(int64(node))
-
-			children := childrenOf(node)
-			work.add(len(children))
-			pushed, err := queue.TryPushBatch(children)
-			if err != nil && !errors.Is(err, workq.ErrFull) {
-				return fmt.Errorf("push children of %d: %w", node, err)
-			}
-			stack = append(stack, children[pushed:]...)
-			work.finish()
-		}
-		return nil
-	}
-
-	const consumerCount = 3
-	consumeErrs := make([]error, consumerCount)
-	var consumers sync.WaitGroup
-	for i := range consumerCount {
-		consumers.Go(func() {
-			consumeErrs[i] = queue.Consume(ctx, handler)
-			// A failed handler leaves its counts unfinished, so canceling ctx is what stops
-			// the other consumers and the seeders.
-			if consumeErrs[i] != nil {
-				cancel()
-			}
+			return nil
 		})
 	}
 
-	// Each seeder gets its count from the owner before it starts, so a handler that finishes
-	// the first seeder's work cannot close the queue before the second seeder has counted
-	// itself. A seeder gives its count up only after its last push returns.
+	const consumerCount = 3
+	var consumers sync.WaitGroup
+	for range consumerCount {
+		consumers.Go(func() {
+			// The outcome owns failure recording and cancellation.
+			_ = consumeAndAbort(abortCtx, queue, "tree consumer", handler, outcome)
+		})
+	}
+
 	roots := []int{2, 3}
-	seedErrs := make([]error, len(roots))
+	accepted, unaccepted := make([][]int, len(roots)), make([][]int, len(roots))
 	var seeders sync.WaitGroup
 	for i, root := range roots {
 		work.add(1)
 		seeders.Go(func() {
 			defer work.finish()
-			work.add(1)
-			if err := queue.Push(ctx, root); err != nil {
-				seedErrs[i] = fmt.Errorf("seed %d: %w", root, err)
+			items := []int{root}
+			work.add(len(items))
+			count, err := queue.PushBatch(abortCtx, items)
+			accepted[i], unaccepted[i] = slices.Clone(items[:count]), slices.Clone(items[count:])
+			// Only seeds proved unaccepted can give back their item counts.
+			for range unaccepted[i] {
 				work.finish()
+			}
+			if failure := queueFailure(abortCtx, err); failure != nil {
+				outcome.failAndAbort("seeder", failure)
 			}
 		})
 	}
-	// The owner releases its count only after it has started every seeder.
 	work.finish()
 
-	seeders.Wait()
-	consumers.Wait()
-	if err := errors.Join(append(seedErrs, consumeErrs...)...); err != nil {
-		fmt.Println(err)
+	joinSelfFeeding(queue, &seeders, &consumers)
+	if err := outcome.err(); err != nil {
+		fmt.Println("accepted:", accepted, "unaccepted:", unaccepted, "failure:", err)
 		return
 	}
 	fmt.Println("sum of visited nodes:", visitedSum.Load())
@@ -139,8 +124,11 @@ func Example_pipeline() {
 		fmt.Println(err)
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	_, stopSources := context.WithCancel(context.Background())
+	defer stopSources()
+	abortCtx, cancelAbort := context.WithCancel(context.Background())
+	defer cancelAbort()
+	outcome := &recipeOutcome{stopSources: stopSources, cancelAbort: cancelAbort}
 
 	var total atomic.Int64
 	sumHandler := func(_ context.Context, batch []int) error {
@@ -149,56 +137,128 @@ func Example_pipeline() {
 		}
 		return nil
 	}
-	doubleHandler := func(ctx context.Context, batch []int) error {
-		for i := range batch {
-			batch[i] *= 2
-		}
-		if _, err := stage2.PushBatch(ctx, batch); err != nil {
-			return fmt.Errorf("push to stage 2: %w", err)
-		}
-		return nil
-	}
 
 	const consumersPerStage = 2
-	stage1Errs := make([]error, consumersPerStage)
-	stage2Errs := make([]error, consumersPerStage)
+	reports := make([][]forwardProgress, consumersPerStage)
 	var stage1Consumers, stage2Consumers sync.WaitGroup
 	for i := range consumersPerStage {
 		stage1Consumers.Go(func() {
-			stage1Errs[i] = stage1.Consume(ctx, doubleHandler)
-			if stage1Errs[i] != nil {
-				cancel()
+			handler := func(ctx context.Context, batch []int) error {
+				progress, err := forwardDoubled(ctx, stage2, batch)
+				reports[i] = append(reports[i], progress)
+				return err
 			}
+			// The outcome owns failure recording and cancellation.
+			_ = consumeAndAbort(abortCtx, stage1, "stage 1", handler, outcome)
 		})
 		stage2Consumers.Go(func() {
-			stage2Errs[i] = stage2.Consume(ctx, sumHandler)
-			if stage2Errs[i] != nil {
-				cancel()
-			}
+			// The outcome owns failure recording and cancellation.
+			_ = consumeAndAbort(abortCtx, stage2, "stage 2", sumHandler, outcome)
 		})
 	}
 
-	items := make([]int, 100)
-	for i := range items {
-		items[i] = i + 1
-	}
-	_, produceErr := stage1.PushBatch(ctx, items)
-	if produceErr != nil {
-		cancel()
-	}
-
-	// The producer has returned, so stage 1 can close. Stage 2 closes only once every stage 1
-	// Consume has returned, because until then a stage 1 handler may still push into it.
-	stage1.Close()
-	stage1Consumers.Wait()
-	stage2.Close()
-	stage2Consumers.Wait()
-
-	errs := append([]error{produceErr}, stage1Errs...)
-	if err := errors.Join(append(errs, stage2Errs...)...); err != nil {
-		fmt.Println(err)
+	var accepted, unaccepted []int
+	var producers sync.WaitGroup
+	producers.Go(func() {
+		items := make([]int, 100)
+		for i := range items {
+			items[i] = i + 1
+		}
+		count, err := stage1.PushBatch(abortCtx, items)
+		accepted, unaccepted = slices.Clone(items[:count]), slices.Clone(items[count:])
+		if failure := queueFailure(abortCtx, err); failure != nil {
+			outcome.failAndAbort("producer", failure)
+		}
+	})
+	closePipeline(stage1, stage2, &producers, &stage1Consumers, &stage2Consumers)
+	if err := outcome.err(); err != nil {
+		fmt.Println("accepted:", accepted, "unaccepted:", unaccepted, "failure:", err)
+		fmt.Println("forwarding:", reports)
 		return
 	}
 	fmt.Println("total:", total.Load())
 	// Output: total: 10100
+}
+
+func visitTree(
+	ctx context.Context,
+	queue *workq.Queue[int],
+	work *outstandingWork,
+	batch []int,
+	visit func(context.Context, int) error,
+) error {
+	stack := slices.Clone(batch)
+	for len(stack) > 0 {
+		if err := ctx.Err(); err != nil {
+			return peerAbort{reason: err}
+		}
+		node := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if err := visit(ctx, node); err != nil {
+			return err
+		}
+		children := childrenOf(node)
+		work.add(len(children))
+		pushed, err := queue.TryPushBatch(children)
+		if err != nil && !errors.Is(err, workq.ErrFull) {
+			return fmt.Errorf("push children of %d: %w", node, err)
+		}
+		stack = append(stack, children[pushed:]...)
+		work.finish()
+	}
+	return nil
+}
+
+func joinSelfFeeding(
+	queue *workq.Queue[int],
+	seeders *sync.WaitGroup,
+	consumers *sync.WaitGroup,
+) {
+	seeders.Wait()
+	consumers.Wait()
+	// After abort, unfinished items may still count, but no caller can publish again.
+	queue.Close()
+}
+
+type forwardProgress struct {
+	forwarded   []int
+	unforwarded []int
+}
+
+func forwardDoubled(
+	ctx context.Context,
+	downstream *workq.Queue[int],
+	batch []int,
+) (forwardProgress, error) {
+	doubled := make([]int, len(batch))
+	for i, item := range batch {
+		doubled[i] = 2 * item
+	}
+	count, err := downstream.PushBatch(ctx, doubled)
+	progress := forwardProgress{
+		forwarded:   slices.Clone(doubled[:count]),
+		unforwarded: slices.Clone(doubled[count:]),
+	}
+	if err == nil {
+		return progress, nil
+	}
+	if failure := queueFailure(ctx, err); failure != nil {
+		return progress, fmt.Errorf("push to stage 2: %w", failure)
+	}
+	return progress, peerAbort{reason: err}
+}
+
+func closePipeline(
+	stage1 *workq.Queue[int],
+	stage2 *workq.Queue[int],
+	producers *sync.WaitGroup,
+	stage1Consumers *sync.WaitGroup,
+	stage2Consumers *sync.WaitGroup,
+) {
+	producers.Wait()
+	stage1.Close()
+	stage1Consumers.Wait()
+	// Stage 1 handlers are stage 2 producers, including while an abort is in progress.
+	stage2.Close()
+	stage2Consumers.Wait()
 }

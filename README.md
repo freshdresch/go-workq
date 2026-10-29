@@ -151,6 +151,17 @@ capacity and the construction-time `GOMAXPROCS`. A declared single consumer reta
 wakes. These targets count registered pollers, not handlers, and promise neither handler order
 nor activation latency. Successful acquisition adds no explicit handoff yield.
 
+Wake groups make consumers runnable, but the Go scheduler decides when they execute. When
+other goroutines occupy the available CPUs, some consumers can start too late to participate
+in a burst. More participating consumers do not necessarily mean faster burst completion.
+
+The queue does not explicitly yield after acquiring a batch to give another consumer a turn.
+This avoids suspending that consumer with a batch already acquired. Under contention, the
+tradeoff can be slower burst completion and more CPU progress for competing goroutines than
+with an explicit handoff yield. For latency-sensitive workloads, measure burst completion
+with the CPU contention expected in deployment. Wake groups do not reserve CPU capacity or
+guarantee prompt handler execution.
+
 `New` rejects a negative `Spins` or `Yields` with an error that wraps `ErrInvalidWaitStrategy`.
 Zero is valid for both. The zero value, `WaitStrategy{}`, parks at once after the first empty
 poll. It never busy-waits, so a caller who passes it by mistake gets slow wakes, not a spinning
@@ -183,6 +194,11 @@ it at their own rate. An empty queue in a latency-sensitive service is more ofte
 
 ## Shutdown
 
+The [lifecycle recipes](lifecycle.md) separate graceful source stop from immediate abort.
+Graceful stop requests an end to admission while consumers drain already admitted work.
+An operational failure or explicit abort cancels the shared worker context. Both paths join
+every owned goroutine.
+
 `Close` follows the rule for closing a Go channel. Call `Close` only after every producer call
 has returned. The consumers then receive every pushed item before they see the queue closed.
 
@@ -204,7 +220,8 @@ A pipeline chains queues. A stage's handler calls `PushBatch` on the next stage'
 after its outside producers return. Wait until every `Consume` on that queue has returned, for
 example with a `sync.WaitGroup`. Only then close the next queue. Closing every queue at once
 breaks the rule for every queue after the first. [`Example_pipeline`](example_test.go) shows
-this order.
+this order. The [pipeline recipe](lifecycle.md#pipelines) covers failure attribution and partial
+forwarding.
 
 ### Self-feeding queues
 
@@ -238,9 +255,10 @@ producer's count before it starts, prevent the mistake that `sync.WaitGroup` war
 Without them, a handler could finish the first seeder's last item and call `Close` before a
 second seeder had counted itself.
 
-A handler that fails must still finish the counts of the items it holds, or the caller must
-cancel `ctx`. Otherwise the count never reaches zero, and the other consumers park until `ctx`
-is done.
+A handler or seeder failure records its cause and cancels the shared worker context. Join all
+seeders and consumers, then close for cleanup. Do not decrement failed or abandoned items to
+force the count to zero. The [self-feeding recipe](lifecycle.md#self-feeding-queues) demonstrates
+abort with a positive outstanding count.
 
 When a self-feeding queue is a pipeline stage, the handlers of the stage before it are outside
 producers. The owner holds one count on that stage's behalf. It releases that count after every
