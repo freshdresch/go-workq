@@ -19,6 +19,8 @@ var (
 	// ErrInvalidWaitStrategy is returned by New, wrapped, when a WaitStrategy has a negative
 	// Spins or Yields.
 	ErrInvalidWaitStrategy = errors.New("workq: wait strategy has a negative count")
+	// ErrInvalidDiagnostics is wrapped by New when diagnostics configuration is invalid.
+	ErrInvalidDiagnostics = errors.New("workq: invalid diagnostics configuration")
 	// ErrFull is returned by the Try producer calls when the queue has no room for every item.
 	// It is ring.ErrFull, so errors.Is matches it across the ring packages.
 	ErrFull = ring.ErrFull
@@ -120,10 +122,19 @@ func WithProducerWait(strategy WaitStrategy) Option {
 	}
 }
 
+// WithDiagnostics selects fixed diagnostics storage and sampling for the queue lifetime.
+// Disabled mode requires all auxiliary fields to be zero. New wraps ErrInvalidDiagnostics
+// for invalid modes, shard counts, or mode/rate combinations.
+func WithDiagnostics(settings DiagnosticsConfig) Option {
+	return func(cfg *config) {
+		cfg.diagnostics = settings
+	}
+}
+
 // New returns an empty queue with room for capacity items. Capacity must be a power of two in
 // [1, 2^30], otherwise New returns an error wrapping ring.ErrInvalidCount. New checks the wait
-// strategies first, then the capacity, then the batch limits, so a bad wait strategy is reported
-// even when the capacity is also invalid.
+// strategies first, then diagnostics, then capacity, then batch limits. Invalid diagnostics
+// wrap ErrInvalidDiagnostics and are rejected before engine allocation.
 //
 // The declared sides pick the engine. Both single sides give dpdk.SPSCQueue, a single consumer
 // alone gives frontier.MPSCQueue, a single producer alone gives frontier.SPMCQueue, and neither

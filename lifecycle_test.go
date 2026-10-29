@@ -14,11 +14,16 @@ import (
 	"github.com/freshdresch/go-data-structures/workq"
 )
 
-func newLifecycleQueue(t *testing.T, capacity, receiveLimit int) *workq.Queue[int] {
+func newLifecycleQueue(
+	t *testing.T,
+	capacity, receiveLimit int,
+	diagnostics workq.DiagnosticsConfig,
+) *workq.Queue[int] {
 	t.Helper()
 	queue, err := workq.New[int](
 		capacity,
 		workq.WithMaxPushBatch(1),
+		workq.WithDiagnostics(diagnostics),
 		workq.WithMaxReceiveBatch(receiveLimit),
 		workq.WithConsumerWait(workq.WaitStrategy{}),
 		workq.WithProducerWait(workq.WaitStrategy{}),
@@ -37,10 +42,14 @@ func requirePending(t *testing.T, done <-chan struct{}) {
 }
 
 func TestLifecycleGracefulDrain(t *testing.T) {
+	runLifecycleModes(t, runLifecycleGracefulDrain)
+}
+
+func runLifecycleGracefulDrain(t *testing.T, diagnostics workq.DiagnosticsConfig) {
 	for _, ending := range []string{"source stop", "finite exhaustion"} {
 		t.Run(ending, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				queue := newLifecycleQueue(t, 2, 1)
+				queue := newLifecycleQueue(t, 2, 1, diagnostics)
 				sourceCtx, stopSources := context.WithCancel(context.Background())
 				abortCtx, cancelAbort := context.WithCancel(context.Background())
 				outcome := &recipeOutcome{stopSources: stopSources, cancelAbort: cancelAbort}
@@ -121,10 +130,14 @@ func TestLifecycleGracefulDrain(t *testing.T) {
 }
 
 func TestLifecycleGraceDeadline(t *testing.T) {
+	runLifecycleModes(t, runLifecycleGraceDeadline)
+}
+
+func runLifecycleGraceDeadline(t *testing.T, diagnostics workq.DiagnosticsConfig) {
 	for _, blocked := range []string{"producer", "consumer"} {
 		t.Run(blocked, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				queue := newLifecycleQueue(t, 2, 1)
+				queue := newLifecycleQueue(t, 2, 1, diagnostics)
 				sourceCtx, stopSources := context.WithCancel(context.Background())
 				abortCtx, cancelAbort := context.WithCancel(context.Background())
 				outcome := &recipeOutcome{stopSources: stopSources, cancelAbort: cancelAbort}
@@ -207,8 +220,12 @@ func TestLifecycleGraceDeadline(t *testing.T) {
 }
 
 func TestLifecycleCompletedDrainStopsSupervision(t *testing.T) {
+	runLifecycleModes(t, runLifecycleCompletedDrainStopsSupervision)
+}
+
+func runLifecycleCompletedDrainStopsSupervision(t *testing.T, diagnostics workq.DiagnosticsConfig) {
 	synctest.Test(t, func(t *testing.T) {
-		queue := newLifecycleQueue(t, 2, 1)
+		queue := newLifecycleQueue(t, 2, 1, diagnostics)
 		_, stopSources := context.WithCancel(context.Background())
 		abortCtx, cancelAbort := context.WithCancel(context.Background())
 		outcome := &recipeOutcome{stopSources: stopSources, cancelAbort: cancelAbort}
@@ -271,8 +288,12 @@ func TestLifecycleCompletedDrainStopsSupervision(t *testing.T) {
 }
 
 func TestLifecycleWaitsForHandlerAfterAbort(t *testing.T) {
+	runLifecycleModes(t, runLifecycleWaitsForHandlerAfterAbort)
+}
+
+func runLifecycleWaitsForHandlerAfterAbort(t *testing.T, diagnostics workq.DiagnosticsConfig) {
 	synctest.Test(t, func(t *testing.T) {
-		queue := newLifecycleQueue(t, 2, 1)
+		queue := newLifecycleQueue(t, 2, 1, diagnostics)
 		_, stopSources := context.WithCancel(context.Background())
 		abortCtx, cancelAbort := context.WithCancel(context.Background())
 		outcome := &recipeOutcome{stopSources: stopSources, cancelAbort: cancelAbort}
@@ -317,8 +338,12 @@ func TestLifecycleWaitsForHandlerAfterAbort(t *testing.T) {
 }
 
 func TestLifecycleHandlerFailure(t *testing.T) {
+	runLifecycleModes(t, runLifecycleHandlerFailure)
+}
+
+func runLifecycleHandlerFailure(t *testing.T, diagnostics workq.DiagnosticsConfig) {
 	synctest.Test(t, func(t *testing.T) {
-		queue := newLifecycleQueue(t, 4, 3)
+		queue := newLifecycleQueue(t, 4, 3, diagnostics)
 		sourceCtx, stopSources := context.WithCancel(context.Background())
 		abortCtx, cancelAbort := context.WithCancel(context.Background())
 		outcome := &recipeOutcome{stopSources: stopSources, cancelAbort: cancelAbort}
@@ -389,9 +414,13 @@ func TestLifecycleHandlerFailure(t *testing.T) {
 }
 
 func TestLifecycleIndependentFailures(t *testing.T) {
+	runLifecycleModes(t, runLifecycleIndependentFailures)
+}
+
+func runLifecycleIndependentFailures(t *testing.T, diagnostics workq.DiagnosticsConfig) {
 	t.Run("independent request deadline", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			queue := newLifecycleQueue(t, 2, 1)
+			queue := newLifecycleQueue(t, 2, 1, diagnostics)
 			_, stopSources := context.WithCancel(context.Background())
 			abortCtx, cancelAbort := context.WithCancel(context.Background())
 			outcome := &recipeOutcome{stopSources: stopSources, cancelAbort: cancelAbort}
@@ -448,7 +477,7 @@ func TestLifecycleIndependentFailures(t *testing.T) {
 	for _, ending := range []string{"deadline first", "unmarked context error"} {
 		t.Run(ending, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				queue := newLifecycleQueue(t, 2, 1)
+				queue := newLifecycleQueue(t, 2, 1, diagnostics)
 				_, stopSources := context.WithCancel(context.Background())
 				abortCtx, cancelAbort := context.WithCancel(context.Background())
 				outcome := &recipeOutcome{stopSources: stopSources, cancelAbort: cancelAbort}
@@ -503,10 +532,14 @@ func TestLifecycleIndependentFailures(t *testing.T) {
 }
 
 func TestLifecycleSourceFailureAndExplicitAbort(t *testing.T) {
+	runLifecycleModes(t, runLifecycleSourceFailureAndExplicitAbort)
+}
+
+func runLifecycleSourceFailureAndExplicitAbort(t *testing.T, diagnostics workq.DiagnosticsConfig) {
 	for _, ending := range []string{"source failure", "explicit abort"} {
 		t.Run(ending, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				queue := newLifecycleQueue(t, 2, 1)
+				queue := newLifecycleQueue(t, 2, 1, diagnostics)
 				sourceCtx, stopSources := context.WithCancel(context.Background())
 				abortCtx, cancelAbort := context.WithCancel(context.Background())
 				outcome := &recipeOutcome{stopSources: stopSources, cancelAbort: cancelAbort}
@@ -562,10 +595,14 @@ func TestLifecycleSourceFailureAndExplicitAbort(t *testing.T) {
 }
 
 func TestLifecyclePartialPushBatch(t *testing.T) {
+	runLifecycleModes(t, runLifecyclePartialPushBatch)
+}
+
+func runLifecyclePartialPushBatch(t *testing.T, diagnostics workq.DiagnosticsConfig) {
 	for _, ending := range []string{"retry suffix", "abort"} {
 		t.Run(ending, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				queue := newLifecycleQueue(t, 2, 1)
+				queue := newLifecycleQueue(t, 2, 1, diagnostics)
 				_, stopSources := context.WithCancel(context.Background())
 				abortCtx, cancelAbort := context.WithCancel(context.Background())
 				outcome := &recipeOutcome{stopSources: stopSources, cancelAbort: cancelAbort}
@@ -629,10 +666,14 @@ func TestLifecyclePartialPushBatch(t *testing.T) {
 }
 
 func TestLifecycleAdmissionGate(t *testing.T) {
+	runLifecycleModes(t, runLifecycleAdmissionGate)
+}
+
+func runLifecycleAdmissionGate(t *testing.T, diagnostics workq.DiagnosticsConfig) {
 	for _, ending := range []string{"normal", "canceled partial"} {
 		t.Run(ending, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				queue := newLifecycleQueue(t, 4, 1)
+				queue := newLifecycleQueue(t, 4, 1, diagnostics)
 				submitCtx, cancelSubmit := context.WithCancel(context.Background())
 				gate := &admissionGate{}
 				release, joined := make(chan struct{}), make(chan struct{})
@@ -703,9 +744,13 @@ func TestLifecycleAdmissionGate(t *testing.T) {
 }
 
 func TestLifecyclePipelineFailure(t *testing.T) {
+	runLifecycleModes(t, runLifecyclePipelineFailure)
+}
+
+func runLifecyclePipelineFailure(t *testing.T, diagnostics workq.DiagnosticsConfig) {
 	synctest.Test(t, func(t *testing.T) {
-		stage1 := newLifecycleQueue(t, 2, 2)
-		stage2 := newLifecycleQueue(t, 1, 1)
+		stage1 := newLifecycleQueue(t, 2, 2, diagnostics)
+		stage2 := newLifecycleQueue(t, 1, 1, diagnostics)
 		_, stopSources := context.WithCancel(context.Background())
 		abortCtx, cancelAbort := context.WithCancel(context.Background())
 		outcome := &recipeOutcome{stopSources: stopSources, cancelAbort: cancelAbort}
@@ -788,8 +833,12 @@ func TestLifecyclePipelineFailure(t *testing.T) {
 }
 
 func TestLifecycleSelfFeedingFailure(t *testing.T) {
+	runLifecycleModes(t, runLifecycleSelfFeedingFailure)
+}
+
+func runLifecycleSelfFeedingFailure(t *testing.T, diagnostics workq.DiagnosticsConfig) {
 	synctest.Test(t, func(t *testing.T) {
-		queue := newLifecycleQueue(t, 1, 1)
+		queue := newLifecycleQueue(t, 1, 1, diagnostics)
 		_, stopSources := context.WithCancel(context.Background())
 		abortCtx, cancelAbort := context.WithCancel(context.Background())
 		outcome := &recipeOutcome{stopSources: stopSources, cancelAbort: cancelAbort}
@@ -890,4 +939,23 @@ func TestLifecycleSelfFeedingFailure(t *testing.T) {
 		_, err = queue.Receive(context.Background(), remaining)
 		require.ErrorIs(t, err, workq.ErrClosed)
 	})
+}
+
+func runLifecycleModes(t *testing.T, run func(*testing.T, workq.DiagnosticsConfig)) {
+	t.Helper()
+	for _, scenario := range []struct {
+		name   string
+		config workq.DiagnosticsConfig
+	}{
+		{name: "disabled"},
+		{name: "counters", config: workq.DiagnosticsConfig{
+			Mode: workq.DiagnosticsCounters, Shards: 1, CapacitySampleEvery: 1,
+		}},
+		{name: "timing", config: workq.DiagnosticsConfig{
+			Mode: workq.DiagnosticsTiming, Shards: 1,
+			CapacitySampleEvery: 1, TimingSampleEvery: 1,
+		}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) { run(t, scenario.config) })
+	}
 }

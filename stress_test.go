@@ -225,7 +225,14 @@ func runStressMatrix(t *testing.T, shutdown stressShutdown) {
 		t.Run(engineCase.name, func(t *testing.T) {
 			for _, pair := range stressStrategies() {
 				t.Run(pair.name, func(t *testing.T) {
-					runStress(t, engineCase, pair, shutdown)
+					for _, mode := range diagnosticsModeCases() {
+						t.Run(mode.name, func(t *testing.T) {
+							configured := pair
+							configured.options = append([]Option{}, pair.options...)
+							configured.options = append(configured.options, WithDiagnostics(mode.config))
+							runStress(t, engineCase, configured, shutdown)
+						})
+					}
 				})
 			}
 		})

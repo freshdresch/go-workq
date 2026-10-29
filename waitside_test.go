@@ -70,8 +70,8 @@ func (items *visibleItems) peek() bool {
 func parkConsumer(t *testing.T, side *waitSide) *waiter {
 	t.Helper()
 	caller := side.getWaiter()
-	require.False(t, side.register(), "register")
-	require.False(t, side.enlist(caller, atNewest), "enlist")
+	require.False(t, side.register(nil), "register")
+	require.False(t, side.enlist(nil, caller, atNewest), "enlist")
 	return caller
 }
 
@@ -124,19 +124,19 @@ func TestWaitSideStalledProducer(t *testing.T) {
 	consumer := parkConsumer(t, &side)
 
 	// Producer B completes, but its item stays invisible behind stalled producer A.
-	assert.False(t, side.wakeCheck())
+	assert.False(t, side.wakeCheck(nil))
 	requireToken(t, consumer)
 	assertCounts(t, &side, 1, 0)
 	require.False(t, items.peek(), "B's item is visible before A completes")
-	require.False(t, side.enlist(consumer, atNewest))
+	require.False(t, side.enlist(nil, consumer, atNewest))
 
 	// A completes, so A's and B's items become visible together.
 	items.count.Store(2)
-	assert.False(t, side.wakeCheck())
+	assert.False(t, side.wakeCheck(nil))
 	requireToken(t, consumer)
 	assertCounts(t, &side, 1, 0)
 	items.count.Add(-2)
-	side.leavePolling(items.peek)
+	side.leavePolling(nil, items.peek)
 
 	assertUnlisted(t, consumer)
 	side.putWaiter(consumer)
@@ -151,7 +151,7 @@ func TestWaitSideCancelWhileParked(t *testing.T) {
 	newer := parkConsumer(t, &side)
 	items.count.Store(1)
 
-	side.leaveList(consumer, false, items.peek)
+	side.leaveList(nil, consumer, false, items.peek)
 
 	assertUnlisted(t, consumer)
 	assertNoToken(t, consumer)
@@ -160,8 +160,8 @@ func TestWaitSideCancelWhileParked(t *testing.T) {
 	assertCounts(t, &side, 0, 2)
 	checkWaitSide(t, &side, 0)
 
-	side.leaveList(older, false, items.peek)
-	side.leaveList(newer, false, items.peek)
+	side.leaveList(nil, older, false, items.peek)
+	side.leaveList(nil, newer, false, items.peek)
 	assertNoToken(t, older)
 	assertNoToken(t, newer)
 	assertCounts(t, &side, 0, 0)
@@ -172,20 +172,20 @@ func TestWaitSideCancelWhilePolling(t *testing.T) {
 	var side waitSide
 	var items visibleItems
 	parked := parkConsumer(t, &side)
-	require.False(t, side.register(), "register the polling consumer")
+	require.False(t, side.register(nil), "register the polling consumer")
 	items.count.Store(1)
 
-	assert.False(t, side.wakeCheck())
+	assert.False(t, side.wakeCheck(nil))
 	assertNoToken(t, parked)
 	assertCounts(t, &side, 1, 1)
 
 	// The polling consumer's ctx is done before it polls.
-	side.leavePolling(items.peek)
+	side.leavePolling(nil, items.peek)
 	requireToken(t, parked)
 	assertCounts(t, &side, 1, 0)
 
 	items.count.Add(-1)
-	side.leavePolling(items.peek)
+	side.leavePolling(nil, items.peek)
 	checkWaitSide(t, &side, 0)
 }
 
@@ -201,7 +201,7 @@ func TestWaitSideCancelRacingWaker(t *testing.T) {
 			first := parkConsumer(t, &side)
 			second := parkConsumer(t, &side)
 
-			assert.False(t, side.wakeCheck())
+			assert.False(t, side.wakeCheck(nil))
 			woken, other := splitWoken(t, first, second)
 			assertUnlisted(t, woken)
 			assertCounts(t, &side, 1, 1)
@@ -210,20 +210,20 @@ func TestWaitSideCancelRacingWaker(t *testing.T) {
 			}
 
 			// The woken waiter's ctx is done after the waker removed it.
-			side.leaveList(woken, false, items.peek)
+			side.leaveList(nil, woken, false, items.peek)
 			assertUnlisted(t, woken)
 			assertNoToken(t, woken)
 			if !itemVisible {
 				assertNoToken(t, other)
 				assertCounts(t, &side, 0, 1)
-				side.leaveList(other, false, items.peek)
+				side.leaveList(nil, other, false, items.peek)
 				checkWaitSide(t, &side, 0)
 				return
 			}
 			requireToken(t, other)
 			assertCounts(t, &side, 1, 0)
 			items.count.Add(-1)
-			side.leavePolling(items.peek)
+			side.leavePolling(nil, items.peek)
 			checkWaitSide(t, &side, 0)
 		})
 	}
@@ -234,7 +234,7 @@ func TestWaitSideParkWhileClosing(t *testing.T) {
 		var side waitSide
 		var items visibleItems
 		caller := side.getWaiter()
-		require.False(t, side.register())
+		require.False(t, side.register(nil))
 
 		side.mu.Lock()
 		assert.True(t, side.setClosedLocked())
@@ -242,13 +242,13 @@ func TestWaitSideParkWhileClosing(t *testing.T) {
 		side.mu.Unlock()
 		before := side.load()
 
-		assert.True(t, side.enlist(caller, atNewest))
+		assert.True(t, side.enlist(nil, caller, atNewest))
 		assert.Equal(t, before, side.load(), "enlist on a closed word")
 		assertUnlisted(t, caller)
-		assert.True(t, side.register(), "register on a closed word")
+		assert.True(t, side.register(nil), "register on a closed word")
 		assert.Equal(t, before, side.load(), "register on a closed word")
 
-		side.leavePolling(items.peek)
+		side.leavePolling(nil, items.peek)
 		assert.True(t, side.load().closed())
 		assertIdleSide(t, &side)
 		checkWaitSide(t, &side, 0)
@@ -266,7 +266,7 @@ func TestWaitSideParkWhileClosing(t *testing.T) {
 		assertCounts(t, &side, 0, 1)
 
 		// done is closed, so the waiter stops waiting without a token.
-		side.leaveList(caller, false, items.peek)
+		side.leaveList(nil, caller, false, items.peek)
 		assertUnlisted(t, caller)
 		assertNoToken(t, caller)
 		assert.True(t, side.load().closed())
@@ -279,19 +279,19 @@ func TestWaitSidePeekRacesCompletion(t *testing.T) {
 	var side waitSide
 	var items visibleItems
 	parked := parkConsumer(t, &side)
-	require.False(t, side.register(), "register the last poller")
+	require.False(t, side.register(nil), "register the last poller")
 
-	side.leavePolling(items.peek)
+	side.leavePolling(nil, items.peek)
 	assertNoToken(t, parked)
 	assertCounts(t, &side, 0, 1)
 
 	items.count.Store(1)
-	assert.False(t, side.wakeCheck())
+	assert.False(t, side.wakeCheck(nil))
 	requireToken(t, parked)
 	assertCounts(t, &side, 1, 0)
 
 	items.count.Add(-1)
-	side.leavePolling(items.peek)
+	side.leavePolling(nil, items.peek)
 	checkWaitSide(t, &side, 0)
 }
 
@@ -299,22 +299,22 @@ func TestWaitSidePeekAfterDecrement(t *testing.T) {
 	var side waitSide
 	var items visibleItems
 	parked := parkConsumer(t, &side)
-	require.False(t, side.register(), "register the last poller")
+	require.False(t, side.register(nil), "register the last poller")
 
 	peekRacingProducer := func() bool {
 		seen := items.count.Load()
 		items.count.Add(1)
-		side.wakeCheck()
+		side.wakeCheck(nil)
 		return seen > 0
 	}
-	side.leavePolling(peekRacingProducer)
+	side.leavePolling(nil, peekRacingProducer)
 
 	require.Len(t, parked.token, 1, "wake tokens sent to the parked waiter")
 	requireToken(t, parked)
 	assertCounts(t, &side, 1, 0)
 
 	items.count.Add(-1)
-	side.leavePolling(items.peek)
+	side.leavePolling(nil, items.peek)
 	checkWaitSide(t, &side, 0)
 }
 
@@ -328,13 +328,13 @@ func TestWaitSideLeaveListAfterItems(t *testing.T) {
 
 		// The extra attempt takes a full batch of 2 and leaves 1 behind.
 		items.count.Add(-2)
-		side.leaveList(leaving, true, items.peek)
+		side.leaveList(nil, leaving, true, items.peek)
 
 		assertUnlisted(t, leaving)
 		requireToken(t, other)
 		assertCounts(t, &side, 1, 0)
 		items.count.Add(-1)
-		side.leavePolling(items.peek)
+		side.leavePolling(nil, items.peek)
 		checkWaitSide(t, &side, 0)
 	})
 
@@ -346,12 +346,12 @@ func TestWaitSideLeaveListAfterItems(t *testing.T) {
 		items.count.Store(1)
 
 		items.count.Add(-1)
-		side.leaveList(leaving, true, items.peek)
+		side.leaveList(nil, leaving, true, items.peek)
 
 		assertUnlisted(t, leaving)
 		assertNoToken(t, other)
 		assertCounts(t, &side, 0, 1)
-		side.leaveList(other, false, items.peek)
+		side.leaveList(nil, other, false, items.peek)
 		checkWaitSide(t, &side, 0)
 	})
 }
@@ -366,28 +366,28 @@ func TestWaitSideHandoff(t *testing.T) {
 			var side waitSide
 			var items visibleItems
 			parked := parkConsumer(t, &side)
-			require.False(t, side.register(), "register the first poller")
-			require.False(t, side.register(), "register the second poller")
+			require.False(t, side.register(nil), "register the first poller")
+			require.False(t, side.register(nil), "register the second poller")
 			if itemVisible {
 				items.count.Store(1)
 			}
 
-			side.leavePolling(items.peek)
+			side.leavePolling(nil, items.peek)
 			assertNoToken(t, parked)
 			assertCounts(t, &side, 1, 1)
 
-			side.leavePolling(items.peek)
+			side.leavePolling(nil, items.peek)
 			if !itemVisible {
 				assertNoToken(t, parked)
 				assertCounts(t, &side, 0, 1)
-				side.leaveList(parked, false, items.peek)
+				side.leaveList(nil, parked, false, items.peek)
 				checkWaitSide(t, &side, 0)
 				return
 			}
 			requireToken(t, parked)
 			assertCounts(t, &side, 1, 0)
 			items.count.Add(-1)
-			side.leavePolling(items.peek)
+			side.leavePolling(nil, items.peek)
 			checkWaitSide(t, &side, 0)
 		})
 	}
@@ -400,18 +400,18 @@ func TestWaitSideWakeOneRegistersWoken(t *testing.T) {
 	second := parkConsumer(t, &side)
 	items.count.Store(1)
 
-	assert.False(t, side.wakeCheck())
+	assert.False(t, side.wakeCheck(nil))
 	woken, other := splitWoken(t, first, second)
 	assertCounts(t, &side, 1, 1)
-	assert.False(t, side.wakeCheck(), "second wake check before the woken consumer polls")
+	assert.False(t, side.wakeCheck(nil), "second wake check before the woken consumer polls")
 	assertCounts(t, &side, 1, 1)
 	assertNoToken(t, other)
 
 	requireToken(t, woken)
 	items.count.Add(-1)
-	side.leavePolling(items.peek)
+	side.leavePolling(nil, items.peek)
 	assertNoToken(t, other)
-	side.leaveList(other, false, items.peek)
+	side.leaveList(nil, other, false, items.peek)
 	checkWaitSide(t, &side, 0)
 }
 
@@ -421,11 +421,11 @@ func TestWaitSideWaiterReuse(t *testing.T) {
 	first := parkConsumer(t, &side)
 	second := parkConsumer(t, &side)
 
-	assert.False(t, side.wakeCheck())
+	assert.False(t, side.wakeCheck(nil))
 	woken, leaving := splitWoken(t, first, second)
 	requireToken(t, woken)
-	side.leavePolling(items.peek)
-	side.leaveList(leaving, false, items.peek)
+	side.leavePolling(nil, items.peek)
+	side.leaveList(nil, leaving, false, items.peek)
 
 	for name, caller := range map[string]*waiter{"woken": woken, "left while listed": leaving} {
 		assertUnlisted(t, caller)
@@ -443,11 +443,11 @@ func TestWaitSideClosedWakeCheck(t *testing.T) {
 	require.True(t, side.setClosedLocked())
 	side.mu.Unlock()
 
-	assert.True(t, side.wakeCheck())
+	assert.True(t, side.wakeCheck(nil))
 	requireToken(t, parked)
 	assertCounts(t, &side, 1, 0)
 
-	side.leavePolling(items.peek)
+	side.leavePolling(nil, items.peek)
 	assertIdleSide(t, &side)
 	checkWaitSide(t, &side, 0)
 }
@@ -461,15 +461,15 @@ func TestWaitSideWakeOrderOldestFirst(t *testing.T) {
 	middle := parkConsumer(t, &side)
 	newest := parkConsumer(t, &side)
 
-	assert.False(t, side.wakeCheck())
+	assert.False(t, side.wakeCheck(nil))
 	requireToken(t, oldest)
 	assertNoToken(t, middle)
 	assertNoToken(t, newest)
 	assertUnlisted(t, oldest)
-	side.leavePolling(items.peek)
+	side.leavePolling(nil, items.peek)
 
-	side.leaveList(middle, false, items.peek)
-	side.leaveList(newest, false, items.peek)
+	side.leaveList(nil, middle, false, items.peek)
+	side.leaveList(nil, newest, false, items.peek)
 	checkWaitSide(t, &side, 0)
 }
 
@@ -477,15 +477,15 @@ func TestWaitSideWakeOneSkipsWithPoller(t *testing.T) {
 	var side waitSide
 	var items visibleItems
 	parked := parkConsumer(t, &side)
-	require.False(t, side.register(), "register the poller")
+	require.False(t, side.register(nil), "register the poller")
 	before := side.load()
 
-	side.wakeOne()
+	side.wakeOne(nil)
 
 	assertNoToken(t, parked)
 	assert.Equal(t, before, side.load(), "word after a wake with a poller registered")
-	side.leavePolling(items.peek)
-	side.leaveList(parked, false, items.peek)
+	side.leavePolling(nil, items.peek)
+	side.leaveList(nil, parked, false, items.peek)
 	checkWaitSide(t, &side, 0)
 }
 
@@ -494,7 +494,7 @@ func TestWaitSideUnderflowPanics(t *testing.T) {
 		var side waitSide
 		var items visibleItems
 		assert.PanicsWithValue(t, "workq: leavePolling without a registered poller", func() {
-			side.leavePolling(items.peek)
+			side.leavePolling(nil, items.peek)
 		})
 		checkWaitSide(t, &side, 0)
 	})
@@ -503,7 +503,7 @@ func TestWaitSideUnderflowPanics(t *testing.T) {
 		var side waitSide
 		caller := side.getWaiter()
 		assert.PanicsWithValue(t, "workq: enlist without a registered poller", func() {
-			side.enlist(caller, atNewest)
+			side.enlist(nil, caller, atNewest)
 		})
 		assertUnlisted(t, caller)
 		checkWaitSide(t, &side, 0)
@@ -516,7 +516,7 @@ func TestWaitSideUnderflowPanics(t *testing.T) {
 		// Clear parked behind the protocol's back, so the listed caller has no count to remove.
 		side.word.Store(0)
 		assert.PanicsWithValue(t, "workq: leaveList with no parked waiter", func() {
-			side.leaveList(caller, false, items.peek)
+			side.leaveList(nil, caller, false, items.peek)
 		})
 		// The panic left mu held, as a real invariant failure would.
 		side.mu.Unlock()

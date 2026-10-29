@@ -7,6 +7,10 @@ See the [observability recipes](observability.md) for application-owned progress
 latency measurements, and live collection. See the [overload recipes](overload.md) to choose
 between waiting, rejection, discard, and a submission wait budget.
 
+Use [queue diagnostics](diagnostics.md) to investigate capacity pressure, batch sizes, polling,
+and wakes. Enable counters or sampled timing at construction with `WithDiagnostics`. Diagnostics
+measure internal queue work. Applications still own completion and handler outcomes.
+
 ## Ownership and completion
 
 A successful push reports acceptance. Acquisition removes work from the queue before application

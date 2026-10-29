@@ -131,3 +131,50 @@ func TestEngineDequeueAfterFailedDequeue(t *testing.T) {
 		})
 	}
 }
+
+func TestEngineFullBurstCanUseCachedCounts(t *testing.T) {
+	for _, engineCase := range engineCases() {
+		t.Run(engineCase.name, func(t *testing.T) {
+			queue, eng := newTestEngine(t, engineCase.options)
+			primeConsumerCache(t, eng)
+			dst := make([]int, 2)
+			moved, available := eng.DequeueBurst(dst)
+			require.Equal(t, 2, moved)
+			assert.Equal(t, []int{1, 2}, dst)
+			wantAvailable := 0
+			if engineCase.name == "MPSC" {
+				// This fixture refreshes during the MPSC full burst. Full does not imply stale.
+				wantAvailable = 3
+			}
+			assert.Equal(t, wantAvailable, available)
+			moved, available = eng.DequeueBurst(nil)
+			assert.Zero(t, moved)
+			assert.Equal(t, 3, available, "nil burst refreshes the consumer cache")
+			dequeueAll(t, eng, 3, 3)
+
+			primeProducerCache(t, eng)
+			moved, reusable := eng.EnqueueBurst([]int{100, 101})
+			require.Equal(t, 2, moved)
+			assert.Zero(t, reusable, "full transfer can leave undiscovered releases")
+			moved, reusable = eng.EnqueueBurst(nil)
+			assert.Zero(t, moved)
+			assert.Equal(t, 3, reusable, "nil burst refreshes reusable room")
+			assertIdleQueue(t, queue)
+		})
+	}
+}
+
+func primeConsumerCache(t *testing.T, eng engine[int]) {
+	t.Helper()
+	enqueueAll(t, eng, 0, 3)
+	dequeueAll(t, eng, 0, 1)
+	enqueueAll(t, eng, 3, 3)
+}
+
+func primeProducerCache(t *testing.T, eng engine[int]) {
+	t.Helper()
+	enqueueAll(t, eng, 0, engineTestCapacity)
+	dequeueAll(t, eng, 0, 3)
+	enqueueAll(t, eng, engineTestCapacity, 1)
+	dequeueAll(t, eng, 3, 3)
+}

@@ -31,8 +31,14 @@ func (q *Queue[T]) Receive(ctx context.Context, dst []T) (received int, err erro
 	if len(dst) == 0 {
 		return 0, nil
 	}
+	var state diagnosticsRecording
+	var recording *diagnosticsRecording
+	if q.diagnostics != nil {
+		state = q.diagnostics.chooseRecording()
+		recording = &state
+	}
 	dst = dst[:min(len(dst), q.maxReceiveBatch)]
-	return q.receive(ctx, dst, nil, nil)
+	return q.receive(ctx, recording, dst, nil, nil)
 }
 
 // Consume receives items in batches and calls handler with each batch, on the caller's
@@ -69,13 +75,19 @@ func (q *Queue[T]) Consume(
 	ctx context.Context,
 	handler func(ctx context.Context, batch []T) error,
 ) error {
+	var state diagnosticsRecording
+	var recording *diagnosticsRecording
+	if q.diagnostics != nil {
+		state = q.diagnostics.chooseRecording()
+		recording = &state
+	}
 	buffer := make([]T, q.maxReceiveBatch)
 	own := newWaiter()
 	for {
 		if isDone(ctx) {
 			return ctx.Err()
 		}
-		received, err := q.receive(ctx, buffer, own, buffer)
+		received, err := q.receive(ctx, recording, buffer, own, buffer)
 		if errors.Is(err, ErrClosed) {
 			return nil
 		}
@@ -92,16 +104,19 @@ func (q *Queue[T]) Consume(
 // within the receive batch limit. Own and clearOnYield are as receiveWait takes them.
 func (q *Queue[T]) receive(
 	ctx context.Context,
+	recording *diagnosticsRecording,
 	dst []T,
 	own *waiter,
 	clearOnYield []T,
 ) (int, error) {
-	if received := q.dequeueAttempt(dst); received > 0 {
+	if received := q.dequeueAttempt(recording, PhaseInitial, dst); received > 0 {
 		// Closed on the producer side tells a consumer nothing, so only the wake matters here.
-		q.producers.wakeCheck()
+		q.producers.wakeCheck(recording.producerCounters())
+		q.flushConsumerProbe(recording)
 		return received, nil
 	}
-	return q.receiveWait(ctx, dst, own, clearOnYield)
+	q.flushConsumerProbe(recording)
+	return q.receiveWait(ctx, recording, dst, own, clearOnYield)
 }
 
 // TryReceive fills a prefix of dst with up to the receive batch limit of items, without
@@ -124,35 +139,46 @@ func (q *Queue[T]) TryReceive(dst []T) (received int, err error) {
 	if len(dst) == 0 {
 		return 0, nil
 	}
+	var state diagnosticsRecording
+	var recording *diagnosticsRecording
+	if q.diagnostics != nil {
+		state = q.diagnostics.chooseRecording()
+		recording = &state
+	}
 	dst = dst[:min(len(dst), q.maxReceiveBatch)]
-	if received = q.dequeueAttempt(dst); received > 0 {
+	if received = q.dequeueAttempt(recording, PhaseInitial, dst); received > 0 {
 		// Closed on the producer side tells a consumer nothing, so only the wake matters here.
-		q.producers.wakeCheck()
+		q.producers.wakeCheck(recording.producerCounters())
+		q.flushConsumerProbe(recording)
 		return received, nil
 	}
+	q.flushConsumerProbe(recording)
 	if !q.consumers.load().closed() {
 		return 0, nil
 	}
 	// The drain check. This attempt comes after the load that saw closed, so it sees every item
 	// pushed before Close. An attempt made before that load could miss the last push.
-	if received = q.dequeueAttempt(dst); received > 0 {
-		q.producers.wakeCheck()
-		return received, nil
-	}
-	return 0, ErrClosed
+	return q.drainCheck(recording, dst)
 }
 
 // dequeueAttempt makes one dequeue attempt into dst, which must be non-empty and within the
 // receive batch limit, and returns how many items it moved.
-func (q *Queue[T]) dequeueAttempt(dst []T) int {
+func (q *Queue[T]) dequeueAttempt(
+	recording *diagnosticsRecording,
+	phase AttemptPhase,
+	dst []T,
+) int {
 	if len(dst) == 1 {
 		item, err := q.engine.Dequeue()
 		if err != nil {
+			recording.recordConsumerAttempt(phase, 1, 0, -1, q.capacity)
 			return 0
 		}
+		recording.recordConsumerAttempt(phase, 1, 1, -1, q.capacity)
 		dst[0] = item
 		return 1
 	}
-	dequeued, _ := q.engine.DequeueBurst(dst)
+	dequeued, remaining := q.engine.DequeueBurst(dst)
+	recording.recordConsumerAttempt(phase, len(dst), dequeued, remaining, q.capacity)
 	return dequeued
 }

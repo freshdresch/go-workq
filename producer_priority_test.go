@@ -2,6 +2,7 @@ package workq
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -54,8 +55,8 @@ func TestProducerFailedWakeRestoresOldest(t *testing.T) {
 		middle := parkProducer(t, &queue.producers)
 		last := parkProducer(t, &queue.producers)
 		defer func() {
-			queue.producers.leaveList(middle, false, queue.peekRoom)
-			queue.producers.leaveList(last, false, queue.peekRoom)
+			queue.producers.leaveList(nil, middle, false, func() bool { return queue.peekRoom(nil) })
+			queue.producers.leaveList(nil, last, false, func() bool { return queue.peekRoom(nil) })
 			queue.producers.putWaiter(middle)
 			queue.producers.putWaiter(last)
 		}()
@@ -76,7 +77,7 @@ func TestProducerFailedWakeRestoresOldest(t *testing.T) {
 				}
 			}, nil)
 			fake.takeRaw(1)
-			queue.producers.wakeCheck()
+			queue.producers.wakeCheck(nil)
 			select {
 			case <-reached:
 			case <-time.After(waitTestTimeout):
@@ -101,8 +102,25 @@ func TestProducerFailedWakeRestoresOldest(t *testing.T) {
 }
 
 func TestProducerPartialProgressResetsPriority(t *testing.T) {
+	for _, config := range diagnosticsAdversarialConfigs() {
+		t.Run(fmt.Sprintf("%+v", config), func(t *testing.T) {
+			testProducerPartialProgressResetsPriority(t, config)
+		})
+	}
+}
+
+func testProducerPartialProgressResetsPriority(t *testing.T, config DiagnosticsConfig) {
 	synctest.Test(t, func(t *testing.T) {
-		queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{}))
+		queue, fake := newFullTestQueue(
+			t,
+			WithProducerWait(WaitStrategy{}),
+			WithDiagnostics(config),
+		)
+		var wakeRecording *diagnosticsRecording
+		if queue.diagnostics != nil {
+			recording := queue.diagnostics.chooseRecording()
+			wakeRecording = &recording
+		}
 		ctx, cancel := newWaitContext(t)
 		results := make(chan pushWaitResult, 1)
 		finished := make(chan struct{})
@@ -119,11 +137,13 @@ func TestProducerPartialProgressResetsPriority(t *testing.T) {
 		requireParked(t, &queue.producers, 1)
 		other := parkProducer(t, &queue.producers)
 		defer func() {
-			queue.producers.leaveList(other, false, queue.peekRoom)
+			queue.producers.leaveList(nil, other, false, func() bool { return queue.peekRoom(nil) })
 			queue.producers.putWaiter(other)
+			assertDiagnosticsConserved(t, queue.Diagnostics(), 1, 0)
+			assertIdleQueue(t, queue)
 		}()
 
-		queue.producers.wakeOne()
+		queue.producers.wakeOne(wakeRecording.producerCounters())
 		synctest.Wait()
 		order := waitOrder(t, &queue.producers)
 		require.Len(t, order, 2)
@@ -132,17 +152,32 @@ func TestProducerPartialProgressResetsPriority(t *testing.T) {
 		// One slot permits partial progress in the first chunk. Its blocked remainder must
 		// start a fresh wait episode behind other, even if the pool supplies the same waiter.
 		fake.takeRaw(1)
-		queue.producers.wakeCheck()
+		queue.producers.wakeCheck(wakeRecording.producerCounters())
 		synctest.Wait()
 		order = waitOrder(t, &queue.producers)
 		require.Len(t, order, 2)
 		require.Same(t, other, order[0], "partial progress ends retry eligibility")
 		cancel()
 		result := awaitPushResult(t, results)
+		<-finished
 		assert.Equal(t, 1, result.pushed)
 		assert.Same(t, context.Canceled, result.err)
 		assertUnlisted(t, order[1])
 		assertNoToken(t, order[1])
+		if config.Mode == DiagnosticsDisabled {
+			return
+		}
+		counters := queue.Diagnostics().Producer
+		assert.Equal(t, uint64(2), counters.WaitStarts)
+		assert.Equal(t, uint64(1), counters.WaitEnds[WaitProgress])
+		assert.Equal(t, uint64(1), counters.WaitEnds[WaitCanceled])
+		assert.Equal(t, uint64(1), counters.ProducerOldestReenlistments)
+		assert.Equal(t, uint64(2), counters.WakeRetryAttempts)
+		assert.Equal(t, uint64(1), counters.WakeRetryZeroProgress)
+		assert.Equal(t, uint64(1), counters.WakeRetryEnds[RetryReparked])
+		assert.Equal(t, uint64(1), counters.WakeRetryEnds[RetryProgress])
+		assert.Equal(t, uint64(3), counters.ParkEnlistments)
+		assertDiagnosticsWaitReconciled(t, counters.DiagnosticsSideSnapshot)
 	})
 }
 
@@ -152,28 +187,28 @@ func TestWaitSideMultipleOldestInsertions(t *testing.T) {
 	firstRetry := newWaiter()
 	secondRetry := newWaiter()
 	for _, caller := range []*waiter{firstRetry, secondRetry} {
-		require.False(t, side.register())
-		require.False(t, side.enlist(caller, atOldest))
+		require.False(t, side.register(nil))
+		require.False(t, side.enlist(nil, caller, atOldest))
 	}
 	newArrival := parkProducer(t, &side)
 	order := []*waiter{secondRetry, firstRetry, previous, newArrival}
 	require.Equal(t, order, waitOrder(t, &side))
 	for _, caller := range order {
-		side.wakeOne()
+		side.wakeOne(nil)
 		requireToken(t, caller)
 		assertUnlisted(t, caller)
-		side.leavePolling(func() bool { return false })
+		side.leavePolling(nil, func() bool { return false })
 		checkWaitSide(t, &side, 0)
 	}
 	assertIdleSide(t, &side)
 
 	// Reuse the same object for an initial park after its earlier oldest insertion.
 	other := parkProducer(t, &side)
-	require.False(t, side.register())
-	require.False(t, side.enlist(firstRetry, atNewest))
+	require.False(t, side.register(nil))
+	require.False(t, side.enlist(nil, firstRetry, atNewest))
 	require.Equal(t, []*waiter{other, firstRetry}, waitOrder(t, &side))
-	side.leaveList(other, false, mustNotPeek(t))
-	side.leaveList(firstRetry, false, mustNotPeek(t))
+	side.leaveList(nil, other, false, mustNotPeek(t))
+	side.leaveList(nil, firstRetry, false, mustNotPeek(t))
 	assertIdleSide(t, &side)
 }
 
@@ -188,25 +223,25 @@ func TestWaitSideOldestInsertionCleanup(t *testing.T) {
 				other = parkProducer(t, &side)
 			}
 			caller := newWaiter()
-			require.False(t, side.register())
+			require.False(t, side.register(nil))
 			if outcome == "close before" {
 				side.mu.Lock()
 				side.setClosedLocked()
 				side.mu.Unlock()
 			}
 			before := side.load()
-			closed := side.enlist(caller, atOldest)
+			closed := side.enlist(nil, caller, atOldest)
 			if outcome == "close before" {
 				require.True(t, closed)
 				assert.Equal(t, before, side.load())
-				side.leavePolling(func() bool { return false })
+				side.leavePolling(nil, func() bool { return false })
 			} else {
 				require.False(t, closed)
 				order := waitOrder(t, &side)
 				require.Same(t, caller, order[0])
 				switch outcome {
 				case "cancel transferred":
-					side.wakeOne()
+					side.wakeOne(nil)
 					assertCounts(t, &side, 1, 1)
 					assertUnlisted(t, caller)
 				case "close after":
@@ -214,13 +249,13 @@ func TestWaitSideOldestInsertionCleanup(t *testing.T) {
 					side.setClosedLocked()
 					side.mu.Unlock()
 				}
-				side.leaveList(caller, false, func() bool { return false })
+				side.leaveList(nil, caller, false, func() bool { return false })
 			}
 			assertUnlisted(t, caller)
 			assertNoToken(t, caller)
 			if other != nil {
 				require.Equal(t, []*waiter{other}, waitOrder(t, &side))
-				side.leaveList(other, false, mustNotPeek(t))
+				side.leaveList(nil, other, false, mustNotPeek(t))
 			}
 			assertIdleSide(t, &side)
 		})
@@ -236,7 +271,7 @@ func TestProducerRestoredRetryClose(t *testing.T) {
 				results := startPushWait(ctx, t, queue, testCase.pushedBefore)
 				synctest.Wait()
 				other := parkProducer(t, &queue.producers)
-				queue.producers.wakeOne()
+				queue.producers.wakeOne(nil)
 				synctest.Wait()
 				order := waitOrder(t, &queue.producers)
 				require.Len(t, order, 2)
@@ -249,7 +284,7 @@ func TestProducerRestoredRetryClose(t *testing.T) {
 				assert.Zero(t, result.pushed)
 				assertUnlisted(t, order[0])
 				assertNoToken(t, order[0])
-				queue.producers.leaveList(other, false, queue.peekRoom)
+				queue.producers.leaveList(nil, other, false, func() bool { return queue.peekRoom(nil) })
 				queue.producers.putWaiter(other)
 				assertIdleQueue(t, queue)
 			})

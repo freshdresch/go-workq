@@ -26,7 +26,7 @@ func TestConsumerScalarPublicationReplenishes(t *testing.T) {
 		}
 	}
 	for _, caller := range callers {
-		q.consumers.leaveList(caller, false, func() bool { return false })
+		q.consumers.leaveList(nil, caller, false, func() bool { return false })
 		assertNoToken(t, caller)
 		assertUnlisted(t, caller)
 	}
@@ -48,7 +48,7 @@ func TestConsumerPublicationSnapshotRaces(t *testing.T) {
 				fake.pushRaw(1, 2, 3)
 			}
 			if race == "decrement" {
-				require.False(t, q.consumers.register())
+				require.False(t, q.consumers.register(nil))
 			}
 			fake.setHooks(nil, func(call engineCall) {
 				if call.kind != callPeek {
@@ -59,12 +59,12 @@ func TestConsumerPublicationSnapshotRaces(t *testing.T) {
 				case "drained":
 					fake.takeRaw(3)
 				case "register":
-					require.False(t, q.consumers.register())
+					require.False(t, q.consumers.register(nil))
 				case "decrement":
-					q.consumers.leavePolling(func() bool { return false })
+					q.consumers.leavePolling(nil, func() bool { return false })
 				}
 			})
-			assert.False(t, q.wakeConsumersAfterPublication())
+			assert.False(t, q.wakeConsumersAfterPublication(nil))
 			want := uint32(3)
 			if race == "empty" {
 				want = 1
@@ -72,10 +72,10 @@ func TestConsumerPublicationSnapshotRaces(t *testing.T) {
 			checkWaitSide(t, &q.consumers, want)
 			fake.setHooks(nil, nil)
 			for _, caller := range callers {
-				q.consumers.leaveList(caller, false, func() bool { return false })
+				q.consumers.leaveList(nil, caller, false, func() bool { return false })
 			}
 			if race == "register" {
-				q.consumers.leavePolling(func() bool { return false })
+				q.consumers.leavePolling(nil, func() bool { return false })
 			}
 			assertIdleQueue(t, q)
 		})
@@ -91,22 +91,22 @@ func TestConsumerWakeGroupAccounting(t *testing.T) {
 				callers[i] = parkConsumer(t, &side)
 			}
 			for range pollers {
-				require.False(t, side.register())
+				require.False(t, side.register(nil))
 			}
 			want := uint32(0)
 			if target > pollers {
 				want = target - pollers
 			}
-			assert.Equal(t, want > 0, side.wakeGroup(target))
+			assert.Equal(t, want > 0, side.wakeGroup(nil, target))
 			checkWaitSide(t, &side, pollers+want)
 			for i, caller := range callers {
 				assert.Equal(t, i < int(want), len(caller.token) == 1)
-				side.leaveList(caller, false, func() bool { return false })
+				side.leaveList(nil, caller, false, func() bool { return false })
 				assertNoToken(t, caller)
 				assertUnlisted(t, caller)
 			}
 			for range pollers {
-				side.leavePolling(func() bool { return false })
+				side.leavePolling(nil, func() bool { return false })
 			}
 			assertIdleSide(t, &side)
 		}
@@ -136,17 +136,17 @@ func TestConsumerPublicationSkipsPeek(t *testing.T) {
 			}
 			if mode == "at cap" {
 				for range 4 {
-					require.False(t, q.consumers.register())
+					require.False(t, q.consumers.register(nil))
 				}
 			}
 			require.NoError(t, q.Push(context.Background(), 1))
 			assert.Zero(t, fake.callCount(callPeek))
 			if caller != nil {
-				q.consumers.leaveList(caller, false, func() bool { return false })
+				q.consumers.leaveList(nil, caller, false, func() bool { return false })
 			}
 			if mode == "at cap" {
 				for range 4 {
-					q.consumers.leavePolling(func() bool { return false })
+					q.consumers.leavePolling(nil, func() bool { return false })
 				}
 			}
 			assertIdleQueue(t, q)
@@ -164,7 +164,7 @@ func TestConsumerWakeGroupRetryAndEarlyExit(t *testing.T) {
 	side.beforeGroupCAS = func() {
 		attempts++
 		if attempts == 1 {
-			require.False(t, side.register())
+			require.False(t, side.register(nil))
 		}
 	}
 	sends := 0
@@ -174,20 +174,20 @@ func TestConsumerWakeGroupRetryAndEarlyExit(t *testing.T) {
 		assertUnlisted(t, caller)
 		requireToken(t, caller)
 		// A recipient may release its obligation before the remaining tokens are sent.
-		side.leavePolling(func() bool { return false })
+		side.leavePolling(nil, func() bool { return false })
 		if sends == 1 {
 			assertCounts(t, &side, 3, 3)
 			assertNoToken(t, callers[1])
 		}
 	}
-	require.True(t, side.wakeGroup(4))
+	require.True(t, side.wakeGroup(nil, 4))
 	assert.Equal(t, 2, attempts, "registration invalidated the first CAS")
 	assert.Equal(t, 3, sends, "the original group never refills after recipients leave")
 	checkWaitSide(t, &side, 1)
 	for _, caller := range callers[3:] {
-		side.leaveList(caller, false, func() bool { return false })
+		side.leaveList(nil, caller, false, func() bool { return false })
 	}
-	side.leavePolling(func() bool { return false })
+	side.leavePolling(nil, func() bool { return false })
 	assertIdleSide(t, &side)
 }
 
@@ -204,21 +204,21 @@ func TestConsumerCleanupReplenishesWithPollers(t *testing.T) {
 				parkConsumer(t, &q.consumers),
 			}
 			if path != "listed" {
-				require.True(t, q.consumers.wakeOne())
+				require.True(t, q.consumers.wakeOne(nil))
 			}
-			require.False(t, q.consumers.register())
+			require.False(t, q.consumers.register(nil))
 			fake.pushRaw(1, 2, 3)
 			if path == "poll" {
 				requireToken(t, own)
-				q.leaveConsumerPolling()
+				q.leaveConsumerPolling(nil)
 			} else {
-				q.leaveConsumerList(own, true)
+				q.leaveConsumerList(nil, own, true)
 			}
 			checkWaitSide(t, &q.consumers, 3)
 			for _, caller := range callers {
-				q.consumers.leaveList(caller, false, func() bool { return false })
+				q.consumers.leaveList(nil, caller, false, func() bool { return false })
 			}
-			q.consumers.leavePolling(func() bool { return false })
+			q.consumers.leavePolling(nil, func() bool { return false })
 			assertIdleQueue(t, q)
 		})
 	}
@@ -237,13 +237,13 @@ func TestConsumerGroupCloseAndCancellationCleanup(t *testing.T) {
 		if closedFirst {
 			q.Close()
 		}
-		assert.Equal(t, closedFirst, q.wakeConsumersAfterPublication())
+		assert.Equal(t, closedFirst, q.wakeConsumersAfterPublication(nil))
 		if !closedFirst {
 			q.Close()
 		}
 		fake.takeRaw(4)
 		for _, caller := range callers {
-			q.leaveConsumerList(caller, false)
+			q.leaveConsumerList(nil, caller, false)
 			assertNoToken(t, caller)
 			assertUnlisted(t, caller)
 			q.consumers.putWaiter(caller)
@@ -271,14 +271,14 @@ func TestConsumerConcurrentTargetsAndCancellation(t *testing.T) {
 		for range 8 {
 			workers.Go(func() {
 				<-start
-				q.wakeConsumersAfterPublication()
+				q.wakeConsumersAfterPublication(nil)
 			})
 		}
 		for _, caller := range callers {
 			workers.Go(func() {
 				<-start
 				// Cancellation releases either a listed waiter or a selected registration.
-				q.leaveConsumerList(caller, false)
+				q.leaveConsumerList(nil, caller, false)
 			})
 		}
 		close(start)
@@ -305,7 +305,7 @@ func TestConsumerPublicationPathsWakeGroups(t *testing.T) {
 			}
 			fake.pushRaw(1, 2, 3)
 			ctx := context.Background()
-			attempt := func() int {
+			attempt := func(AttemptPhase) int {
 				require.NoError(t, fake.Enqueue(4))
 				return 1
 			}
@@ -322,21 +322,21 @@ func TestConsumerPublicationPathsWakeGroups(t *testing.T) {
 				require.NoError(t, err)
 			case "spin":
 				q.producerWait.Spins = 1
-				_, finished, err := q.spinForRoom(ctx, attempt, 0)
+				_, finished, err := q.spinForRoom(ctx, nil, attempt, 0)
 				require.True(t, finished)
 				require.NoError(t, err)
 			case "poll":
-				require.False(t, q.producers.register())
-				_, _, err := q.attemptRegistered(ctx, attempt, 0)
+				require.False(t, q.producers.register(nil))
+				_, _, err := q.attemptRegistered(ctx, nil, attempt, 0, PhaseYield)
 				require.NoError(t, err)
 			case "park":
-				require.False(t, q.producers.register())
-				_, _, err := q.parkForRoom(ctx, attempt, 0, false)
+				require.False(t, q.producers.register(nil))
+				_, _, err := q.parkForRoom(ctx, nil, attempt, 0, false)
 				require.NoError(t, err)
 			}
 			checkWaitSide(t, &q.consumers, 4)
 			for _, caller := range callers {
-				q.consumers.leaveList(caller, false, func() bool { return false })
+				q.consumers.leaveList(nil, caller, false, func() bool { return false })
 			}
 			assertIdleQueue(t, q)
 		})
@@ -357,7 +357,7 @@ func TestConsumerWakeCapStaysAtConstructionValue(t *testing.T) {
 	checkWaitSide(t, &q.consumers, 2)
 	for i, caller := range callers {
 		assert.Equal(t, i < 2, len(caller.token) == 1)
-		q.consumers.leaveList(caller, false, func() bool { return false })
+		q.consumers.leaveList(nil, caller, false, func() bool { return false })
 	}
 	assertIdleQueue(t, q)
 }

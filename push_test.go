@@ -108,7 +108,7 @@ func TestTryPushWakesParkedConsumer(t *testing.T) {
 			require.NoError(t, queue.TryPush(1))
 
 			requireToken(t, consumer)
-			queue.consumers.leavePolling(mustNotPeek(t))
+			queue.consumers.leavePolling(nil, mustNotPeek(t))
 			queue.consumers.putWaiter(consumer)
 			assert.Equal(t, []int{1}, receiveAll(t, queue))
 			assertIdleQueue(t, queue)
@@ -179,7 +179,7 @@ func TestTryPushBatchWakesParkedConsumer(t *testing.T) {
 			require.Equal(t, 2, pushed)
 
 			requireToken(t, consumer)
-			queue.consumers.leavePolling(mustNotPeek(t))
+			queue.consumers.leavePolling(nil, mustNotPeek(t))
 			queue.consumers.putWaiter(consumer)
 			assert.Equal(t, []int{1, 2}, receiveAll(t, queue))
 			assertIdleQueue(t, queue)
@@ -205,7 +205,7 @@ func TestTryPushBatchWakesAfterFirstChunk(t *testing.T) {
 	assert.Equal(t, 5, pushed)
 	assert.Equal(t, 3, fake.callCount(callEnqueueBurst))
 	requireToken(t, consumer)
-	queue.consumers.leavePolling(mustNotPeek(t))
+	queue.consumers.leavePolling(nil, mustNotPeek(t))
 	queue.consumers.putWaiter(consumer)
 	assert.Equal(t, sequence(0, 5), fake.takeRaw(5))
 	assertIdleQueue(t, queue)
@@ -477,7 +477,7 @@ func TestPushWakesParkedConsumer(t *testing.T) {
 			require.NoError(t, queue.Push(ctx, 1))
 
 			requireToken(t, consumer)
-			queue.consumers.leavePolling(mustNotPeek(t))
+			queue.consumers.leavePolling(nil, mustNotPeek(t))
 			queue.consumers.putWaiter(consumer)
 			assert.Equal(t, []int{1}, receiveAll(t, queue))
 			assertIdleQueue(t, queue)
@@ -633,7 +633,7 @@ func TestPushBatchWakesAfterFirstChunk(t *testing.T) {
 	assert.Equal(t, 5, pushed)
 	assert.Equal(t, 3, fake.callCount(callEnqueueBurst))
 	requireToken(t, consumer)
-	queue.consumers.leavePolling(mustNotPeek(t))
+	queue.consumers.leavePolling(nil, mustNotPeek(t))
 	queue.consumers.putWaiter(consumer)
 	assert.Equal(t, sequence(0, 5), fake.takeRaw(5))
 	assertIdleQueue(t, queue)
@@ -659,7 +659,7 @@ func TestPushBatchWakesAfterPartialMove(t *testing.T) {
 	assert.Equal(t, 2, pushed)
 	assert.Equal(t, 2, fake.callCount(callEnqueueBurst))
 	requireToken(t, consumer)
-	queue.consumers.leavePolling(mustNotPeek(t))
+	queue.consumers.leavePolling(nil, mustNotPeek(t))
 	queue.consumers.putWaiter(consumer)
 	assert.Equal(t, sequence(0, 2), fake.takeRaw(2))
 	assertIdleQueue(t, queue)
@@ -734,7 +734,7 @@ func TestPushWokenByWaitingConsumer(t *testing.T) {
 		requireParked(t, &queue.producers, 1)
 
 		fake.releaseVisibility()
-		assert.False(t, queue.consumers.wakeCheck())
+		assert.False(t, queue.consumers.wakeCheck(nil))
 
 		assert.NoError(t, awaitPush(t, pushResults), "producer B")
 		result := awaitResult(t, receiveResults)

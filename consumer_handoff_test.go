@@ -22,11 +22,11 @@ func TestConsumerSuccessWithoutHandoffYield(t *testing.T) {
 					target = parkConsumer(t, &q.consumers)
 				}
 				producer := parkConsumer(t, &q.producers)
-				require.False(t, q.consumers.register())
+				require.False(t, q.consumers.register(nil))
 				fake.pushRaw(1, 2)
 				fake.setHooks(func(call engineCall) {
 					if call.kind == callDequeue && path == "removed" {
-						q.consumers.wakeCheck()
+						q.consumers.wakeCheck(nil)
 						require.Len(t, own.token, 1, "own token is buffered before cleanup")
 						target = parkConsumer(t, &q.consumers)
 					}
@@ -48,9 +48,9 @@ func TestConsumerSuccessWithoutHandoffYield(t *testing.T) {
 				var finished bool
 				var err error
 				if path == "poll" {
-					received, finished, err = q.pollRegistered(ctx, dst)
+					received, finished, err = q.pollRegistered(ctx, nil, PhaseYield, dst)
 				} else {
-					received, finished, err = q.parkForItems(ctx, dst, own)
+					received, finished, err = q.parkForItems(ctx, nil, dst, own)
 				}
 				assert.Equal(t, 1, received)
 				assert.True(t, finished)
@@ -65,8 +65,8 @@ func TestConsumerSuccessWithoutHandoffYield(t *testing.T) {
 				assert.Len(t, target.token, 1)
 				assert.Len(t, producer.token, 1)
 				assertCounts(t, &q.consumers, 1, 0)
-				q.consumers.leaveList(target, false, func() bool { return false })
-				q.producers.leaveList(producer, false, func() bool { return false })
+				q.consumers.leaveList(nil, target, false, func() bool { return false })
+				q.producers.leaveList(nil, producer, false, func() bool { return false })
 				assertIdleQueue(t, q)
 			})
 		}

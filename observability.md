@@ -1,8 +1,9 @@
 # Observability recipes
 
 These recipes measure application progress and latency through the existing workq API.
-The application owns all counters, timestamps, and collection. Direct queue use adds no
-observability work. Start with the [lifecycle recipes](lifecycle.md) for ownership and shutdown.
+The application owns these counters, timestamps, and collection. The optional
+[queue diagnostics](diagnostics.md) separately measure internal attempts, waits, wakes, and
+capacity observations. Start with the [lifecycle recipes](lifecycle.md) for ownership and shutdown.
 Metrics report progress. They do not decide when work may stop.
 
 ## Choose the measurements

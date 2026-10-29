@@ -1,6 +1,7 @@
 package workq
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"sync"
@@ -9,6 +10,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/freshdresch/go-data-structures/ring"
 )
 
 const (
@@ -82,13 +86,17 @@ func (fake *frontierFake) complete(position uint64, item int) {
 // take claims up to frontierFakeMaxTake visible positions for a consumer, starting at first.
 // It returns a count of 0 when nothing is visible.
 func (fake *frontierFake) take() (first uint64, count uint64) {
+	return fake.takeAtMost(frontierFakeMaxTake)
+}
+
+func (fake *frontierFake) takeAtMost(limit uint64) (first uint64, count uint64) {
 	for {
 		first = fake.taken.Load()
 		visible := fake.visible.Load()
 		if visible <= first {
 			return 0, 0
 		}
-		count = min(visible-first, frontierFakeMaxTake)
+		count = min(visible-first, limit)
 		if fake.taken.CompareAndSwap(first, first+count) {
 			return first, count
 		}
@@ -142,30 +150,30 @@ func awaitProgress(
 	if attempt() {
 		return true
 	}
-	if side.register() {
+	if side.register(nil) {
 		t.Error("register saw closed, which the stress test never sets")
 		return false
 	}
 	caller := side.getWaiter()
 	defer side.putWaiter(caller)
 	for {
-		if side.enlist(caller, atNewest) {
+		if side.enlist(nil, caller, atNewest) {
 			t.Error("enlist saw closed, which the stress test never sets")
-			side.leavePolling(peek)
+			side.leavePolling(nil, peek)
 			return false
 		}
 		if attempt() {
-			side.leaveList(caller, true, peek)
+			side.leaveList(nil, caller, true, peek)
 			return true
 		}
 		select {
 		case <-caller.token:
 			if attempt() {
-				side.leavePolling(peek)
+				side.leavePolling(nil, peek)
 				return true
 			}
 		case <-stop:
-			side.leaveList(caller, false, peek)
+			side.leaveList(nil, caller, false, peek)
 			return false
 		}
 	}
@@ -195,7 +203,7 @@ func (run *protocolStress) produce(t *testing.T, firstItem int, itemCount int) {
 				runtime.Gosched()
 			}
 			run.fake.complete(position, item)
-			run.consumerSide.wakeCheck()
+			run.consumerSide.wakeCheck(nil)
 			return true
 		}
 		if !awaitProgress(t, &run.producerSide, push, run.fake.roomFree, run.stop) {
@@ -221,7 +229,7 @@ func (run *protocolStress) consume(t *testing.T, quota int) {
 			run.timesTaken[run.fake.item(position)].Add(1)
 		}
 		run.fake.release(first, count)
-		run.producerSide.wakeCheck()
+		run.producerSide.wakeCheck(nil)
 		takenHere += int(count)
 		totalAfter := run.takenTotal.Add(int64(count))
 		totalBefore := totalAfter - int64(count)
@@ -322,4 +330,161 @@ func runProtocolStressRound(t *testing.T, round int) {
 	assert.Equal(t, uint64(items), run.fake.released, "round %d: released positions", round)
 	assertIdleSide(t, &run.consumerSide)
 	assertIdleSide(t, &run.producerSide)
+}
+
+// frontierStressEngine runs the existing reservation and release gaps through Queue's real
+// transfer and wait paths. The adapter keeps the same stalls and four-item take limit.
+type frontierStressEngine struct {
+	frontierFake
+}
+
+func (fake *frontierStressEngine) Capacity() int { return frontierFakeCapacity }
+
+func (fake *frontierStressEngine) Enqueue(item int) error {
+	position, ok := fake.reserve()
+	if !ok {
+		return ring.ErrFull
+	}
+	if position%producerStallInterval == 0 {
+		runtime.Gosched()
+	}
+	fake.complete(position, item)
+	return nil
+}
+
+func (fake *frontierStressEngine) EnqueueBurst(items []int) (enqueued, free int) {
+	for _, item := range items {
+		if err := fake.Enqueue(item); err != nil {
+			break
+		}
+		enqueued++
+	}
+	reserved := fake.reserved.Load()
+	released := fake.releasedTo.Load()
+	free = max(0, min(frontierFakeCapacity, frontierFakeCapacity-int(reserved)+int(released)))
+	return enqueued, free
+}
+
+func (fake *frontierStressEngine) Dequeue() (int, error) {
+	var dst [1]int
+	count, _ := fake.DequeueBurst(dst[:])
+	if count == 0 {
+		return 0, ring.ErrEmpty
+	}
+	return dst[0], nil
+}
+
+func (fake *frontierStressEngine) DequeueBurst(dst []int) (dequeued, available int) {
+	if len(dst) != 0 {
+		first, count := fake.takeAtMost(uint64(min(len(dst), frontierFakeMaxTake)))
+		if count != 0 {
+			if first%consumerStallInterval == 0 {
+				runtime.Gosched()
+			}
+			for offset := range count {
+				dst[offset] = fake.item(first + offset)
+			}
+			fake.release(first, count)
+			dequeued = int(count)
+		}
+	}
+	visible := fake.visible.Load()
+	taken := fake.taken.Load()
+	available = max(0, min(frontierFakeCapacity, int(visible)-int(taken)))
+	return dequeued, available
+}
+
+func TestDiagnosticsQueueProtocolStress(t *testing.T) {
+	for _, config := range diagnosticsAdversarialConfigs() {
+		t.Run(fmt.Sprintf("%+v", config), func(t *testing.T) {
+			rounds := 300
+			if testing.Short() || raceEnabled {
+				rounds = 30
+			}
+			for round := range rounds {
+				runDiagnosticsProtocolStressRound(t, config, round)
+				if t.Failed() {
+					return
+				}
+			}
+		})
+	}
+}
+
+func runDiagnosticsProtocolStressRound(
+	t *testing.T,
+	diagnosticsConfig DiagnosticsConfig,
+	round int,
+) {
+	t.Helper()
+	fake := &frontierStressEngine{}
+	cfg, err := resolveConfig(frontierFakeCapacity, []Option{
+		WithDiagnostics(diagnosticsConfig),
+		WithConsumerWait(WaitStrategy{}),
+		WithProducerWait(WaitStrategy{}),
+		WithMaxReceiveBatch(frontierFakeMaxTake),
+	})
+	require.NoError(t, err)
+	queue := newQueue[int](fake, cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var takenTotal atomic.Int64
+	timesTaken := make([]atomic.Int32, stressItemsPerRound)
+	var workers sync.WaitGroup
+	for producer := range stressProducers {
+		workers.Go(func() {
+			perProducer := stressItemsPerRound / stressProducers
+			items := sequence(producer*perProducer, perProducer)
+			moved, err := queue.PushBatch(ctx, items)
+			assert.NoError(t, err)
+			assert.Equal(t, len(items), moved)
+		})
+	}
+	for consumer := range stressConsumers {
+		workers.Go(func() {
+			quota := stressItemsPerRound / 6
+			if consumer == stressConsumers-1 {
+				quota = stressItemsPerRound
+			}
+			takenHere := 0
+			dst := make([]int, frontierFakeMaxTake)
+			for takenHere < quota {
+				moved, err := queue.Receive(ctx, dst)
+				if err != nil {
+					assert.ErrorIs(t, err, context.Canceled)
+					return
+				}
+				for _, item := range dst[:moved] {
+					if assert.True(t, item >= 0 && item < len(timesTaken)) {
+						timesTaken[item].Add(1)
+					}
+				}
+				takenHere += moved
+				if takenTotal.Add(int64(moved)) == stressItemsPerRound {
+					cancel()
+					return
+				}
+			}
+		})
+	}
+	done := make(chan struct{})
+	go func() {
+		workers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(stressRoundTimeout):
+		stacks := make([]byte, 1<<20)
+		stacks = stacks[:runtime.Stack(stacks, true)]
+		panic(fmt.Sprintf("diagnostics protocol round %d stalled\n%s", round, stacks))
+	}
+	for item := range timesTaken {
+		assert.Equal(t, int32(1), timesTaken[item].Load(), "item %d, round %d", item, round)
+	}
+	assert.Equal(t, int64(stressItemsPerRound), takenTotal.Load())
+	assert.Equal(t, uint64(stressItemsPerRound), fake.completed)
+	assert.Equal(t, uint64(stressItemsPerRound), fake.released)
+	assertIdleQueue(t, queue)
+	assertDiagnosticsConserved(t, queue.Diagnostics(), stressItemsPerRound, stressItemsPerRound)
 }

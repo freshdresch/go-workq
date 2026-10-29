@@ -6,6 +6,7 @@ import (
 )
 
 type config struct {
+	diagnostics     DiagnosticsConfig
 	singleProducer  bool
 	singleConsumer  bool
 	maxPushBatch    int
@@ -22,8 +23,10 @@ type Queue[T any] struct {
 	maxPushBatch    int
 	maxReceiveBatch int
 	consumerWakeCap uint32
+	capacity        uint32
 	consumerWait    WaitStrategy
 	producerWait    WaitStrategy
+	diagnostics     *diagnostics
 	done            chan struct{}
 	hooks           testHooks
 	_               [128]byte
@@ -65,6 +68,11 @@ func resolveConfig(capacity int, options []Option) (config, error) {
 	if err := checkWaitStrategy("producer", cfg.producerWait); err != nil {
 		return config{}, err
 	}
+	resolvedDiagnostics, err := resolveDiagnostics(cfg.diagnostics)
+	if err != nil {
+		return config{}, fmt.Errorf("new work queue: %w", err)
+	}
+	cfg.diagnostics = resolvedDiagnostics
 	return cfg, nil
 }
 
@@ -95,7 +103,8 @@ func newQueue[T any](engine engine[T], cfg config) *Queue[T] {
 	consumerWait := cfg.consumerWait
 	producerWait := cfg.producerWait
 	procs := runtime.GOMAXPROCS(0)
-	wakeCap := max(1, min(procs, engine.Capacity()))
+	capacity := engine.Capacity()
+	wakeCap := max(1, min(procs, capacity))
 	if cfg.singleConsumer {
 		wakeCap = 1
 	}
@@ -108,6 +117,8 @@ func newQueue[T any](engine engine[T], cfg config) *Queue[T] {
 		maxPushBatch:    cfg.maxPushBatch,
 		maxReceiveBatch: cfg.maxReceiveBatch,
 		consumerWakeCap: uint32(wakeCap),
+		capacity:        uint32(capacity),
+		diagnostics:     newDiagnostics(cfg.diagnostics),
 		consumerWait:    consumerWait,
 		producerWait:    producerWait,
 		done:            make(chan struct{}),
@@ -161,14 +172,16 @@ func (q *Queue[T]) Close() {
 
 // peekItems reports whether a dequeue would find items, without moving any. A zero-length
 // DequeueBurst returns a fresh available count. See A4 in "Engine assumptions" in wakeup.md.
-func (q *Queue[T]) peekItems() bool {
+func (q *Queue[T]) peekItems(recording *diagnosticsRecording) bool {
 	_, available := q.engine.DequeueBurst(nil)
+	recording.consumerCounters().recordCapacity(CleanupProbe, available, q.capacity)
 	return available > 0
 }
 
 // peekRoom reports whether an enqueue would find room, without moving any items. A zero-length
 // EnqueueBurst returns a fresh free count. See A4 in "Engine assumptions" in wakeup.md.
-func (q *Queue[T]) peekRoom() bool {
+func (q *Queue[T]) peekRoom(recording *diagnosticsRecording) bool {
 	_, free := q.engine.EnqueueBurst(nil)
+	recording.producerCounters().recordCapacity(CleanupProbe, free, q.capacity)
 	return free > 0
 }

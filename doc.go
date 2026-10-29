@@ -33,6 +33,18 @@
 // asynchronously by handlers needs its own owner and completion boundary. See workq/lifecycle.md
 // in the repository for shutdown, outcome attribution, and batch reconciliation recipes.
 //
+// # Diagnostics
+//
+// [WithDiagnostics] enables cumulative internal counters or sampled wait timing at construction.
+// [Queue.Diagnostics] returns a detached snapshot. Collect each delta series sequentially from
+// the same queue lifetime and schema. Live fields need not describe one instant. Disabled
+// snapshots report static metadata only, including zero WaitState counts and closed flags.
+//
+// Diagnostics measure attempts, transfers, waits, wakes, and capacity observations. They do not
+// measure application completion or exact queue depth. Close does not freeze recording. Join
+// all queue callers before collecting final values and reconcile handler outcomes separately.
+// See workq/diagnostics.md in the repository for tuning, sampling, memory, and collection rules.
+//
 // # Engine selection
 //
 // New picks the ring queue, called the engine, from the sides the caller declares.

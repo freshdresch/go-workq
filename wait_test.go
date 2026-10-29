@@ -51,7 +51,7 @@ func startReceiveWaitWith(
 	go func() {
 		defer close(finished)
 		dst := make([]int, dstLength)
-		received, err := queue.receiveWait(ctx, dst, own, nil)
+		received, err := queue.receiveWait(ctx, nil, dst, own, nil)
 		results <- waitResult{received: received, err: err, items: dst[:received]}
 	}()
 	return results
@@ -139,7 +139,7 @@ func TestReceiveWaitItemDuringLastPoll(t *testing.T) {
 		queue := newTestQueue(t, fake, WithConsumerWait(WaitStrategy{Yields: 1}))
 		// The wake check sees the consumer still registered for its yield-phase poll and skips, so
 		// only the extra attempt after enlist can find the item.
-		fake.setHooks(forceEmptyThenPush(fake, 1, 7, func() { queue.consumers.wakeCheck() }))
+		fake.setHooks(forceEmptyThenPush(fake, 1, 7, func() { queue.consumers.wakeCheck(nil) }))
 		ctx, _ := newWaitContext(t)
 
 		result := awaitResult(t, startReceiveWait(ctx, t, queue))
@@ -157,7 +157,7 @@ func TestReceiveWaitItemDuringExtraAttempt(t *testing.T) {
 		queue := newTestQueue(t, fake, WithConsumerWait(WaitStrategy{}))
 		// With no spins or yields, the first dequeue is the extra attempt. The consumer is already
 		// parked by then, so the wake check wakes it.
-		fake.setHooks(forceEmptyThenPush(fake, 1, 7, func() { queue.consumers.wakeCheck() }))
+		fake.setHooks(forceEmptyThenPush(fake, 1, 7, func() { queue.consumers.wakeCheck(nil) }))
 		ctx, _ := newWaitContext(t)
 
 		result := awaitResult(t, startReceiveWait(ctx, t, queue))
@@ -186,7 +186,7 @@ func TestReceiveWaitWokenPollsFirst(t *testing.T) {
 		synctest.Wait()
 		requireParked(t, &queue.consumers, 1)
 
-		queue.consumers.wakeOne()
+		queue.consumers.wakeOne(nil)
 
 		synctest.Wait()
 		requireParked(t, &queue.consumers, 1)
@@ -315,14 +315,14 @@ func TestReceiveWaitWokenSeesClosed(t *testing.T) {
 
 		// The consumer is parked, so the token from wakeOne decides its select before Close
 		// runs, and the test covers the token path.
-		queue.consumers.wakeOne()
+		queue.consumers.wakeOne(nil)
 		fake.releaseVisibility()
 		queue.Close()
 
 		result := awaitResult(t, results)
 		require.NoError(t, result.err)
 		assert.Equal(t, []int{7}, result.items)
-		received, err := queue.receiveWait(ctx, make([]int, 1), nil, nil)
+		received, err := queue.receiveWait(ctx, nil, make([]int, 1), nil, nil)
 		assert.Same(t, ErrClosed, err, "second call")
 		assert.Zero(t, received, "second call")
 		assert.Zero(t, queue.consumers.load().pollers(), "pollers")
@@ -379,7 +379,7 @@ func requireReceiveWaitWakesProducer(t *testing.T, queue *Queue[int]) {
 	require.NoError(t, result.err)
 	assert.Equal(t, []int{7}, result.items)
 	requireToken(t, producer)
-	queue.producers.leavePolling(mustNotPeek(t))
+	queue.producers.leavePolling(nil, mustNotPeek(t))
 	queue.producers.putWaiter(producer)
 	assertIdleQueue(t, queue)
 }
@@ -523,7 +523,7 @@ func TestReceiveWaitSpinDrainsItemClosedBeforeCall(t *testing.T) {
 
 	require.NoError(t, result.err)
 	assert.Equal(t, []int{7}, result.items)
-	received, err := queue.receiveWait(ctx, make([]int, 1), nil, nil)
+	received, err := queue.receiveWait(ctx, nil, make([]int, 1), nil, nil)
 	assert.Same(t, ErrClosed, err, "second call")
 	assert.Zero(t, received, "second call")
 	assertIdleQueue(t, queue)
@@ -572,7 +572,7 @@ func TestReceiveWaitClearsOnYield(t *testing.T) {
 	ctx, _ := newWaitContext(t)
 	dst := make([]*int, 1)
 
-	received, err := queue.receiveWait(ctx, dst, nil, clearOnYield)
+	received, err := queue.receiveWait(ctx, nil, dst, nil, clearOnYield)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, received)
@@ -594,7 +594,7 @@ func TestReceiveWaitSpinKeepsClearOnYield(t *testing.T) {
 	ctx, _ := newWaitContext(t)
 	dst := make([]*int, 1)
 
-	received, err := queue.receiveWait(ctx, dst, nil, clearOnYield)
+	received, err := queue.receiveWait(ctx, nil, dst, nil, clearOnYield)
 
 	require.NoError(t, err)
 	assert.Equal(t, 1, received)
@@ -652,7 +652,7 @@ func TestReceiveWaitExtraAttemptLeavesItemsWakesWaiter(t *testing.T) {
 		require.NoError(t, result.err)
 		assert.Equal(t, []int{1, 2}, result.items)
 		requireToken(t, other)
-		queue.consumers.leavePolling(mustNotPeek(t))
+		queue.consumers.leavePolling(nil, mustNotPeek(t))
 		queue.consumers.putWaiter(other)
 		assert.Equal(t, []int{3}, fake.takeRaw(1))
 		assertIdleQueue(t, queue)
@@ -676,19 +676,19 @@ func TestReceiveWaitRemovedCallerHandsOff(t *testing.T) {
 		if call.kind == callDequeueBurst && call.count == 1 {
 			other = parkConsumer(t, &queue.consumers)
 			fake.pushRaw(1, 2, 3)
-			queue.consumers.wakeCheck()
+			queue.consumers.wakeCheck(nil)
 			assertNoToken(t, other)
 		}
 	}, nil)
 
 	dst := make([]int, 2)
-	received, err := queue.receiveWait(context.Background(), dst, nil, nil)
+	received, err := queue.receiveWait(context.Background(), nil, dst, nil, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, []int{1, 2}, dst[:received])
 	require.NotNil(t, other, "the extra attempt's hook ran")
 	requireToken(t, other)
-	queue.consumers.leavePolling(mustNotPeek(t))
+	queue.consumers.leavePolling(nil, mustNotPeek(t))
 	queue.consumers.putWaiter(other)
 	assert.Equal(t, []int{3}, fake.takeRaw(1))
 	assertIdleQueue(t, queue)
@@ -706,7 +706,7 @@ func TestReceiveWaitOwnWaiter(t *testing.T) {
 		requireOnlyListed(t, &queue.consumers, own)
 
 		// A wake makes the consumer park again, so the same waiter goes through a token too.
-		queue.consumers.wakeOne()
+		queue.consumers.wakeOne(nil)
 		synctest.Wait()
 		requireParked(t, &queue.consumers, 1)
 		requireOnlyListed(t, &queue.consumers, own)
@@ -754,8 +754,8 @@ func newFullTestQueue(t *testing.T, options ...Option) (*Queue[int], *scriptedEn
 }
 
 // enqueueAttempt returns an attempt that pushes item with one Enqueue, as a one-item push does.
-func enqueueAttempt(queue *Queue[int], item int) func() int {
-	return func() int {
+func enqueueAttempt(queue *Queue[int], item int) func(AttemptPhase) int {
+	return func(AttemptPhase) int {
 		if err := queue.engine.Enqueue(item); err != nil {
 			return 0
 		}
@@ -782,7 +782,7 @@ func startPushWaitWith(
 	ctx context.Context,
 	t *testing.T,
 	queue *Queue[int],
-	attempt func() int,
+	attempt func(AttemptPhase) int,
 	pushedBefore int,
 ) <-chan pushWaitResult {
 	t.Helper()
@@ -795,7 +795,7 @@ func startPushWaitWith(
 	})
 	go func() {
 		defer close(finished)
-		pushed, err := queue.pushWait(ctx, attempt, pushedBefore)
+		pushed, err := queue.pushWait(ctx, nil, attempt, pushedBefore)
 		results <- pushWaitResult{pushed: pushed, err: err}
 	}()
 	return results
@@ -860,7 +860,7 @@ func TestPushWaitPartialExtraAttempt(t *testing.T) {
 			fake.takeRaw(3)
 		}
 	}, nil)
-	attempt := func() int {
+	attempt := func(AttemptPhase) int {
 		enqueued, _ := queue.engine.EnqueueBurst([]int{5, 6, 7})
 		return enqueued
 	}
@@ -1010,7 +1010,7 @@ func requirePushWaitWakesConsumer(t *testing.T, queue *Queue[int], fake *scripte
 	assert.Equal(t, 1, fake.callCount(callEnqueue), "the first attempt moved the item")
 	requirePushedItem(t, fake)
 	requireToken(t, consumer)
-	queue.consumers.leavePolling(mustNotPeek(t))
+	queue.consumers.leavePolling(nil, mustNotPeek(t))
 	queue.consumers.putWaiter(consumer)
 	assertIdleQueue(t, queue)
 }
@@ -1136,7 +1136,7 @@ func TestPushWaitWokenPollsFirst(t *testing.T) {
 		synctest.Wait()
 		requireParked(t, &queue.producers, 1)
 
-		queue.producers.wakeOne()
+		queue.producers.wakeOne(nil)
 
 		synctest.Wait()
 		requireParked(t, &queue.producers, 1)
@@ -1167,7 +1167,7 @@ func TestPushWaitWokenFindsRoom(t *testing.T) {
 		requireParked(t, &queue.producers, 1)
 
 		fake.takeRaw(1)
-		queue.producers.wakeCheck()
+		queue.producers.wakeCheck(nil)
 
 		result := awaitPushResult(t, results)
 		require.NoError(t, result.err)
@@ -1194,7 +1194,7 @@ func TestPushWaitExtraAttemptLeavesRoomWakesWaiter(t *testing.T) {
 	require.NoError(t, result.err)
 	assert.Equal(t, 1, result.pushed)
 	requireToken(t, other)
-	queue.producers.leavePolling(mustNotPeek(t))
+	queue.producers.leavePolling(nil, mustNotPeek(t))
 	queue.producers.putWaiter(other)
 	assertIdleQueue(t, queue)
 }
@@ -1211,7 +1211,7 @@ func TestPushWaitPooledWaiterLeftClean(t *testing.T) {
 		requireParked(t, &queue.producers, 1)
 		parkedWaiters := []*waiter{listedWaiter(t, &queue.producers)}
 
-		queue.producers.wakeOne()
+		queue.producers.wakeOne(nil)
 		synctest.Wait()
 		requireParked(t, &queue.producers, 1)
 		parkedWaiters = append(parkedWaiters, listedWaiter(t, &queue.producers))
@@ -1432,7 +1432,7 @@ func TestPushWaitClosedAtEnlist(t *testing.T) {
 	queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{Yields: 1}))
 	ctx := closeAfterFirstAttempt(t, queue, fake, callEnqueue)
 
-	pushed, err := queue.pushWait(ctx, enqueueAttempt(queue, pushWaitItem), 0)
+	pushed, err := queue.pushWait(ctx, nil, enqueueAttempt(queue, pushWaitItem), 0)
 
 	assert.Same(t, ErrClosed, err)
 	assert.Zero(t, pushed)
@@ -1446,7 +1446,7 @@ func TestPushWaitClosedBeforeRegisteredAttempt(t *testing.T) {
 	queue, fake := newFullTestQueue(t, WithProducerWait(WaitStrategy{Yields: 2}))
 	ctx := closeAfterFirstAttempt(t, queue, fake, callEnqueue)
 
-	pushed, err := queue.pushWait(ctx, enqueueAttempt(queue, pushWaitItem), 0)
+	pushed, err := queue.pushWait(ctx, nil, enqueueAttempt(queue, pushWaitItem), 0)
 
 	assert.Same(t, ErrClosed, err)
 	assert.Zero(t, pushed)
@@ -1461,7 +1461,7 @@ func TestReceiveWaitClosedAtEnlist(t *testing.T) {
 	queue := newTestQueue(t, fake, WithConsumerWait(WaitStrategy{Yields: 1}))
 	ctx := closeAfterFirstAttempt(t, queue, fake, callDequeue)
 
-	received, err := queue.receiveWait(ctx, make([]int, 1), nil, nil)
+	received, err := queue.receiveWait(ctx, nil, make([]int, 1), nil, nil)
 
 	assert.Same(t, ErrClosed, err)
 	assert.Zero(t, received)
@@ -1476,7 +1476,7 @@ func TestReceiveWaitClosedBeforeRegisteredPoll(t *testing.T) {
 	queue := newTestQueue(t, fake, WithConsumerWait(WaitStrategy{Yields: 2}))
 	ctx := closeAfterFirstAttempt(t, queue, fake, callDequeue)
 
-	received, err := queue.receiveWait(ctx, make([]int, 1), nil, nil)
+	received, err := queue.receiveWait(ctx, nil, make([]int, 1), nil, nil)
 
 	assert.Same(t, ErrClosed, err)
 	assert.Zero(t, received)
@@ -1562,7 +1562,7 @@ func TestPushWaitLeavePollingWakesWaiter(t *testing.T) {
 				assert.Equal(t, 1, result.pushed)
 			}
 			requireToken(t, other)
-			queue.producers.leavePolling(mustNotPeek(t))
+			queue.producers.leavePolling(nil, mustNotPeek(t))
 			queue.producers.putWaiter(other)
 			assertIdleQueue(t, queue)
 		})
@@ -1597,7 +1597,7 @@ func TestReceiveWaitLeavePollingWakesWaiter(t *testing.T) {
 			wantLeft := map[string][]int{"moving": {2}, "ctx": {1}, "closed": nil}[exit.name]
 			assert.Equal(t, wantLeft, fake.takeRaw(len(wantLeft)), "items left for the woken one")
 			requireToken(t, other)
-			queue.consumers.leavePolling(mustNotPeek(t))
+			queue.consumers.leavePolling(nil, mustNotPeek(t))
 			queue.consumers.putWaiter(other)
 			assertIdleQueue(t, queue)
 		})

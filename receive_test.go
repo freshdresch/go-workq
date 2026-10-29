@@ -50,8 +50,8 @@ func receiveAll(t *testing.T, queue *Queue[int]) []int {
 func parkProducer(t *testing.T, side *waitSide) *waiter {
 	t.Helper()
 	caller := side.getWaiter()
-	require.False(t, side.register(), "register")
-	require.False(t, side.enlist(caller, atNewest), "enlist")
+	require.False(t, side.register(nil), "register")
+	require.False(t, side.enlist(nil, caller, atNewest), "enlist")
 	return caller
 }
 
@@ -136,7 +136,7 @@ func TestCloseWakesParkedConsumer(t *testing.T) {
 			assertNoToken(t, consumer)
 			assert.True(t, queue.consumers.load().closed(), "consumer side closed")
 			assert.True(t, queue.producers.load().closed(), "producer side closed")
-			queue.consumers.leaveList(consumer, false, mustNotPeek(t))
+			queue.consumers.leaveList(nil, consumer, false, mustNotPeek(t))
 			queue.consumers.putWaiter(consumer)
 			assertIdleQueue(t, queue)
 		})
@@ -160,7 +160,7 @@ func TestTryReceiveWakesParkedProducer(t *testing.T) {
 				assert.Equal(t, sequence(0, dstLength), dst[:received])
 
 				requireToken(t, producer)
-				queue.producers.leavePolling(mustNotPeek(t))
+				queue.producers.leavePolling(nil, mustNotPeek(t))
 				queue.producers.putWaiter(producer)
 				assertIdleQueue(t, queue)
 			})
@@ -252,7 +252,7 @@ func TestTryReceiveDrainCheckWakesParkedProducer(t *testing.T) {
 	assert.Equal(t, []int{7}, dst[:received])
 	assert.Equal(t, 2, fake.callCount(callDequeue), "the drain check made the second attempt")
 	requireToken(t, producer)
-	queue.producers.leavePolling(mustNotPeek(t))
+	queue.producers.leavePolling(nil, mustNotPeek(t))
 	queue.producers.putWaiter(producer)
 	assertIdleQueue(t, queue)
 }
@@ -632,7 +632,7 @@ func TestReceiveWakesParkedProducer(t *testing.T) {
 				assert.Equal(t, sequence(0, dstLength), dst[:received])
 
 				requireToken(t, producer)
-				queue.producers.leavePolling(mustNotPeek(t))
+				queue.producers.leavePolling(nil, mustNotPeek(t))
 				queue.producers.putWaiter(producer)
 				assertIdleQueue(t, queue)
 			})
@@ -658,7 +658,7 @@ func TestConsumeWakesParkedProducer(t *testing.T) {
 
 			require.ErrorIs(t, err, errHandler)
 			requireToken(t, producer)
-			queue.producers.leavePolling(mustNotPeek(t))
+			queue.producers.leavePolling(nil, mustNotPeek(t))
 			queue.producers.putWaiter(producer)
 			assertIdleQueue(t, queue)
 		})

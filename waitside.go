@@ -78,13 +78,16 @@ func (side *waitSide) compareAndSwap(current sideWord, updated sideWord) bool {
 // register adds the calling consumer to pollers at the start of the yield phase, keeping
 // invariant I2. When closed is set, it registers nothing and returns true, and the caller goes
 // to the drain check instead.
-func (side *waitSide) register() (closed bool) {
+func (side *waitSide) register(counters *diagnosticsSideCounters) (closed bool) {
 	for {
 		word := side.load()
 		if word.closed() {
 			return true
 		}
 		if side.compareAndSwap(word, word+onePoller) {
+			if counters != nil {
+				counters.registrations.Add(1)
+			}
 			return false
 		}
 	}
@@ -95,19 +98,19 @@ func (side *waitSide) register() (closed bool) {
 // the belief that another caller took care of it. It reports whether closed was set, and wakes
 // on the counts alone either way, because a waiter woken after closed is set is also woken by
 // done and takes its token as it leaves.
-func (side *waitSide) wakeCheck() (closed bool) {
+func (side *waitSide) wakeCheck(counters *diagnosticsSideCounters) (closed bool) {
 	word := side.load()
 	if word.needsWake() {
-		side.wakeOne()
+		side.wakeOne(counters)
 	}
 	return word.closed()
 }
 
 // wakeOne serializes selection with list cleanup. See "Transitions" in wakeup.md.
 // It reports whether it sent a token, after releasing mu.
-func (side *waitSide) wakeOne() bool {
+func (side *waitSide) wakeOne(counters *diagnosticsSideCounters) bool {
 	side.mu.Lock()
-	woke := side.wakeOneLocked()
+	woke := side.wakeOneLocked(counters)
 	side.mu.Unlock()
 	return woke
 }
@@ -117,16 +120,26 @@ func (side *waitSide) wakeOne() bool {
 // before it runs and concurrent wake checks see a poller and skip (I2). It removes the waiter
 // in the same critical section (I1) and only then sends its token (I3), so the send never
 // blocks. It reports true only after the send. A retry that finds a poller reports false.
-func (side *waitSide) wakeOneLocked() bool {
+func (side *waitSide) wakeOneLocked(counters *diagnosticsSideCounters) bool {
+	if counters != nil {
+		counters.wakeCalls[WakeOne].Add(1)
+	}
 	for {
 		word := side.load()
 		if !word.needsWake() {
 			return false
 		}
 		if side.compareAndSwap(word, word+onePoller-oneParked) {
+			if counters != nil {
+				counters.wakeTransfers[WakeOne].Add(1)
+				counters.wakeRecipients.Add(1)
+			}
 			woken := side.removeForWake()
 			select {
 			case woken.token <- struct{}{}:
+				if counters != nil {
+					counters.tokensSent.Add(1)
+				}
 				return true
 			default:
 				panic("workq: waiter already holds a wake token")
@@ -166,10 +179,10 @@ func (side *waitSide) unlink(caller *waiter) {
 // every exit from polling except parking (I2). Peek runs only after the decrement, because a
 // count taken before it can miss an item made visible between the count and the decrement.
 // It reports whether its cleanup sent a wake token.
-func (side *waitSide) leavePolling(peek func() bool) bool {
+func (side *waitSide) leavePolling(counters *diagnosticsSideCounters, peek func() bool) bool {
 	return side.leavePollingWith(func(left sideWord) bool {
 		if left.needsWake() && peek() {
-			return side.wakeOne()
+			return side.wakeOne(counters)
 		}
 		return false
 	})
@@ -201,18 +214,31 @@ const (
 // pollers to parked and links it at position in one critical section (I1, I2). When closed
 // is set, it returns true and changes nothing, so the caller is still registered and must run
 // leavePolling.
-func (side *waitSide) enlist(caller *waiter, position enlistPosition) (closed bool) {
+func (side *waitSide) enlist(
+	counters *diagnosticsSideCounters,
+	caller *waiter,
+	position enlistPosition,
+) (closed bool) {
 	side.mu.Lock()
 	defer side.mu.Unlock()
 	for {
 		word := side.load()
 		if word.closed() {
+			if counters != nil {
+				counters.parkEnlistClosed.Add(1)
+			}
 			return true
 		}
 		if word.pollers() == 0 {
 			panic("workq: enlist without a registered poller")
 		}
 		if side.compareAndSwap(word, word-onePoller+oneParked) {
+			if counters != nil {
+				counters.parkEnlistments.Add(1)
+				if position == atOldest {
+					counters.producerOldestReenlistments.Add(1)
+				}
+			}
 			break
 		}
 	}
@@ -243,10 +269,15 @@ func (side *waitSide) enlist(caller *waiter, position enlistPosition) (closed bo
 // took items and more remain. A caller already removed was registered as a poller by its waker,
 // so it takes the token (I3) and leaves polling (I2). Both paths report whether they sent
 // another caller a token after completing cleanup.
-func (side *waitSide) leaveList(caller *waiter, movedItems bool, peek func() bool) bool {
-	return side.leaveListWith(caller, movedItems, func(word sideWord) bool {
+func (side *waitSide) leaveList(
+	counters *diagnosticsSideCounters,
+	caller *waiter,
+	movedItems bool,
+	peek func() bool,
+) bool {
+	return side.leaveListWith(counters, caller, movedItems, func(word sideWord) bool {
 		if word.needsWake() && peek() {
-			return side.wakeOne()
+			return side.wakeOne(counters)
 		}
 		return false
 	})
@@ -255,6 +286,7 @@ func (side *waitSide) leaveList(caller *waiter, movedItems bool, peek func() boo
 // leaveListWith drains a selected caller's token before releasing its registration.
 // A still-listed caller runs cleanup only after an extra attempt moved items.
 func (side *waitSide) leaveListWith(
+	counters *diagnosticsSideCounters,
 	caller *waiter,
 	movedItems bool,
 	cleanup func(sideWord) bool,
@@ -263,6 +295,9 @@ func (side *waitSide) leaveListWith(
 	if !caller.listed {
 		side.mu.Unlock()
 		<-caller.token
+		if counters != nil {
+			counters.tokensDrainedByCleanup.Add(1)
+		}
 		return side.leavePollingWith(cleanup)
 	}
 	side.unlink(caller)
@@ -300,12 +335,19 @@ func (side *waitSide) setClosedLocked() (first bool) {
 // wakeGroup transfers one bounded group before any recipient can release its registration.
 // The target stays fixed across CAS retries and recipients never refill this invocation.
 // See "Consumer wake groups" in wakeup.md for the target and transfer boundaries.
-func (side *waitSide) wakeGroup(target uint32) bool {
+func (side *waitSide) wakeGroup(counters *diagnosticsConsumerCounters, target uint32) bool {
+	if counters != nil {
+		counters.wakeCalls[WakeGroup].Add(1)
+		counters.groupTarget.record(uint64(target))
+	}
 	side.mu.Lock()
 	defer side.mu.Unlock()
 	for {
 		word := side.load()
 		if word.parked() == 0 || word.pollers() >= target {
+			if counters != nil {
+				counters.groupActualSize.record(0)
+			}
 			return false
 		}
 		if sideWord(target) > countMask {
@@ -322,10 +364,18 @@ func (side *waitSide) wakeGroup(target uint32) bool {
 		if !side.compareAndSwap(word, word+transfer-transfer*oneParked) {
 			continue
 		}
+		if counters != nil {
+			counters.wakeTransfers[WakeGroup].Add(1)
+			counters.wakeRecipients.Add(uint64(count))
+			counters.groupActualSize.record(uint64(count))
+		}
 		for range count {
 			woken := side.removeForWake()
 			select {
 			case woken.token <- struct{}{}:
+				if counters != nil {
+					counters.tokensSent.Add(1)
+				}
 				if side.afterGroupToken != nil {
 					side.afterGroupToken()
 				}

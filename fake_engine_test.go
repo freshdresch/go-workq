@@ -27,6 +27,8 @@ const (
 type engineCall struct {
 	kind  engineCallKind
 	count int
+	// transferKind identifies the originating burst only for a probe.
+	transferKind engineCallKind
 }
 
 // scriptedEngine is an engine over a slice that tests drive through hooks, so a test can place
@@ -48,6 +50,7 @@ type scriptedEngine[T any] struct {
 	maxMove    int
 	forceEmpty bool
 	calls      [engineCallKinds]int
+	callLog    []engineCall
 	before     func(call engineCall)
 	after      func(call engineCall)
 }
@@ -164,7 +167,7 @@ func (fake *scriptedEngine[T]) Enqueue(item T) error {
 }
 
 func (fake *scriptedEngine[T]) EnqueueBurst(items []T) (enqueued, free int) {
-	call := fake.begin(burstKind(callEnqueueBurst, len(items)))
+	call := fake.beginCall(burstKind(callEnqueueBurst, len(items)), callEnqueueBurst)
 	fake.mu.Lock()
 	if !fake.takeForceEmptyLocked() {
 		enqueued = min(len(items), fake.freeLocked(), fake.maxEnqueueBatch)
@@ -196,7 +199,7 @@ func (fake *scriptedEngine[T]) Dequeue() (T, error) {
 }
 
 func (fake *scriptedEngine[T]) DequeueBurst(dst []T) (dequeued, available int) {
-	call := fake.begin(burstKind(callDequeueBurst, len(dst)))
+	call := fake.beginCall(burstKind(callDequeueBurst, len(dst)), callDequeueBurst)
 	fake.mu.Lock()
 	if !fake.takeForceEmptyLocked() {
 		dequeued = copy(dst[:min(len(dst), fake.maxDequeueBatch)], fake.visible)
@@ -221,9 +224,17 @@ func burstKind(kind engineCallKind, length int) engineCallKind {
 
 // begin counts a call of kind and runs the before hook for it.
 func (fake *scriptedEngine[T]) begin(kind engineCallKind) engineCall {
+	return fake.beginCall(kind, kind)
+}
+
+func (fake *scriptedEngine[T]) beginCall(kind, transferKind engineCallKind) engineCall {
 	fake.mu.Lock()
 	fake.calls[kind]++
 	call := engineCall{kind: kind, count: fake.calls[kind]}
+	if kind == callPeek {
+		call.transferKind = transferKind
+	}
+	fake.callLog = append(fake.callLog, call)
 	before := fake.before
 	fake.mu.Unlock()
 	if before != nil {
@@ -288,4 +299,10 @@ func TestScriptedEngineControls(t *testing.T) {
 	_, available = fake.DequeueBurst(nil)
 	assert.Equal(t, 1, available, "the released item is visible")
 	assert.Equal(t, 1, fake.callCount(callPeek))
+}
+
+func (fake *scriptedEngine[T]) recordedCalls() []engineCall {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	return append([]engineCall(nil), fake.callLog...)
 }

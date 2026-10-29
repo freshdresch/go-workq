@@ -397,7 +397,7 @@ func TestParkedProducerCancellationObservation(t *testing.T) {
 					caller := listedWaiter(t, &queue.producers)
 					switch outcome {
 					case "woken":
-						queue.producers.wakeOne()
+						queue.producers.wakeOne(nil)
 					case "consumer closed":
 						finish = publishConsumerClose(t, queue)
 						cancel()
@@ -474,7 +474,7 @@ func TestParkedProducerCancellationAfterTokenTransfer(t *testing.T) {
 					}
 					return false
 				}, "parked producer to enter cancellation cleanup")
-				queue.producers.wakeOneLocked()
+				queue.producers.wakeOneLocked(nil)
 				assertUnlisted(t, caller)
 				assertCounts(t, &queue.producers, 1, 0)
 				assert.Len(t, caller.token, 1, "cleanup still owes the transferred token")
@@ -529,10 +529,18 @@ func TestReceivePreservesCallerStorageWhileWaiting(t *testing.T) {
 }
 
 func TestProducerClosePublicationGap(t *testing.T) {
+	for _, config := range diagnosticsAdversarialConfigs() {
+		t.Run(fmt.Sprintf("%+v", config), func(t *testing.T) {
+			testProducerClosePublicationGap(t, config)
+		})
+	}
+}
+
+func testProducerClosePublicationGap(t *testing.T, config DiagnosticsConfig) {
 	setGOMAXPROCS(t, 4)
 	for _, strategy := range []WaitStrategy{{Spins: 1}, {Yields: 1}} {
 		t.Run(fmt.Sprintf("%+v", strategy), func(t *testing.T) {
-			queue, fake := newFullTestQueue(t, WithProducerWait(strategy))
+			queue, fake := newFullTestQueue(t, WithProducerWait(strategy), WithDiagnostics(config))
 			ctx, cancel := newWaitContext(t)
 			entered := make(chan struct{})
 			resume := make(chan struct{})
@@ -571,6 +579,8 @@ func TestProducerClosePublicationGap(t *testing.T) {
 				assertIdleQueue(t, queue)
 			}
 			queue.Close()
+			<-finished
+			assertDiagnosticsConserved(t, queue.Diagnostics(), 0, 0)
 		})
 	}
 }

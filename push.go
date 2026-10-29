@@ -32,23 +32,27 @@ import "context"
 // Producers may call Push concurrently. On a queue built with WithSingleProducer, the one
 // producer must serialize all its producer calls.
 func (q *Queue[T]) Push(ctx context.Context, item T) error {
+	var state diagnosticsRecording
+	var recording *diagnosticsRecording
+	if q.diagnostics != nil {
+		state = q.diagnostics.chooseRecording()
+		recording = &state
+	}
 	if q.consumers.load().closed() {
 		return ErrClosed
 	}
-	if err := q.engine.Enqueue(item); err != nil {
-		attempt := func() int {
-			if err := q.engine.Enqueue(item); err != nil {
-				return 0
-			}
-			return 1
+	moved := q.enqueueAttempt(recording, PhaseInitial, item)
+	if moved == 0 {
+		q.flushProducerProbe(recording)
+		attempt := func(phase AttemptPhase) int {
+			return q.enqueueAttempt(recording, phase, item)
 		}
-		_, err := q.pushWait(ctx, attempt, 0)
+		_, err := q.pushWait(ctx, recording, attempt, 0)
 		return err
 	}
-	if q.wakeConsumersAfterPublication() {
-		return ErrClosedDuringPush
-	}
-	return nil
+	err := q.consumerWakeCheck(recording)
+	q.flushProducerProbe(recording)
+	return err
 }
 
 // PushBatch adds every item in items, in order, and returns how many it pushed, which is less
@@ -88,6 +92,12 @@ func (q *Queue[T]) Push(ctx context.Context, item T) error {
 // PushBatch concurrently. On a queue built with WithSingleProducer, the one producer must
 // serialize all its producer calls.
 func (q *Queue[T]) PushBatch(ctx context.Context, items []T) (pushed int, err error) {
+	var state diagnosticsRecording
+	var recording *diagnosticsRecording
+	if q.diagnostics != nil {
+		state = q.diagnostics.chooseRecording()
+		recording = &state
+	}
 	if q.consumers.load().closed() {
 		return 0, ErrClosed
 	}
@@ -101,7 +111,7 @@ func (q *Queue[T]) PushBatch(ctx context.Context, items []T) (pushed int, err er
 			}
 		}
 		chunk := items[pushed:min(pushed+q.maxPushBatch, len(items))]
-		chunkPushed, err := q.pushChunk(ctx, chunk, pushed)
+		chunkPushed, err := q.pushChunk(ctx, recording, chunk, pushed)
 		pushed += chunkPushed
 		if err != nil {
 			return pushed, err
@@ -133,24 +143,30 @@ func (q *Queue[T]) checkBetweenChunks(ctx context.Context, pushedBefore int) err
 // neither closed nor ctx before it tries.
 func (q *Queue[T]) pushChunk(
 	ctx context.Context,
+	recording *diagnosticsRecording,
 	chunk []T,
 	pushedBefore int,
 ) (pushed int, err error) {
 	for pushed < len(chunk) {
-		enqueued, _ := q.engine.EnqueueBurst(chunk[pushed:])
+		rest := chunk[pushed:]
+		enqueued, remaining := q.engine.EnqueueBurst(rest)
+		recording.recordProducerAttempt(PhaseInitial, len(rest), enqueued, remaining, q.capacity)
 		if enqueued > 0 {
 			pushed += enqueued
-			if q.wakeConsumersAfterPublication() {
-				return pushed, ErrClosedDuringPush
+			err := q.consumerWakeCheck(recording)
+			q.flushProducerProbe(recording)
+			if err != nil {
+				return pushed, err
 			}
 			continue
 		}
-		rest := chunk[pushed:]
-		attempt := func() int {
-			moved, _ := q.engine.EnqueueBurst(rest)
+		q.flushProducerProbe(recording)
+		attempt := func(phase AttemptPhase) int {
+			moved, remaining := q.engine.EnqueueBurst(rest)
+			recording.recordProducerAttempt(phase, len(rest), moved, remaining, q.capacity)
 			return moved
 		}
-		moved, err := q.pushWait(ctx, attempt, pushedBefore+pushed)
+		moved, err := q.pushWait(ctx, recording, attempt, pushedBefore+pushed)
 		pushed += moved
 		if err != nil {
 			return pushed, err
@@ -173,16 +189,22 @@ func (q *Queue[T]) pushChunk(
 // ErrFull, and retrying TryPush in a loop deadlocks like a blocking push. The handler keeps such
 // items on a stack local to its call and processes that stack before it returns.
 func (q *Queue[T]) TryPush(item T) error {
+	var state diagnosticsRecording
+	var recording *diagnosticsRecording
+	if q.diagnostics != nil {
+		state = q.diagnostics.chooseRecording()
+		recording = &state
+	}
 	if q.consumers.load().closed() {
 		return ErrClosed
 	}
-	if err := q.engine.Enqueue(item); err != nil {
+	if q.enqueueAttempt(recording, PhaseInitial, item) == 0 {
+		q.flushProducerProbe(recording)
 		return ErrFull
 	}
-	if q.wakeConsumersAfterPublication() {
-		return ErrClosedDuringPush
-	}
-	return nil
+	err := q.consumerWakeCheck(recording)
+	q.flushProducerProbe(recording)
+	return err
 }
 
 // TryPushBatch adds as many of items as fit, in order, without waiting, and returns how many it
@@ -209,6 +231,12 @@ func (q *Queue[T]) TryPush(item T) error {
 // one producer must serialize all its producer calls. A handler that pushes into its own queue
 // must not drop the items TryPushBatch did not push, as TryPush describes.
 func (q *Queue[T]) TryPushBatch(items []T) (pushed int, err error) {
+	var state diagnosticsRecording
+	var recording *diagnosticsRecording
+	if q.diagnostics != nil {
+		state = q.diagnostics.chooseRecording()
+		recording = &state
+	}
 	if q.consumers.load().closed() {
 		return 0, ErrClosed
 	}
@@ -217,12 +245,17 @@ func (q *Queue[T]) TryPushBatch(items []T) (pushed int, err error) {
 	}
 	for pushed < len(items) {
 		chunk := items[pushed:min(pushed+q.maxPushBatch, len(items))]
-		enqueued, _ := q.engine.EnqueueBurst(chunk)
+		enqueued, remaining := q.engine.EnqueueBurst(chunk)
+		recording.recordProducerAttempt(PhaseInitial, len(chunk), enqueued, remaining, q.capacity)
 		if enqueued > 0 {
 			pushed += enqueued
-			if q.wakeConsumersAfterPublication() {
-				return pushed, ErrClosedDuringPush
+			err := q.consumerWakeCheck(recording)
+			q.flushProducerProbe(recording)
+			if err != nil {
+				return pushed, err
 			}
+		} else {
+			q.flushProducerProbe(recording)
 		}
 		if enqueued < len(chunk) {
 			break
@@ -232,4 +265,17 @@ func (q *Queue[T]) TryPushBatch(items []T) (pushed int, err error) {
 		return pushed, ErrFull
 	}
 	return pushed, nil
+}
+
+func (q *Queue[T]) enqueueAttempt(
+	recording *diagnosticsRecording,
+	phase AttemptPhase,
+	item T,
+) int {
+	moved := 1
+	if err := q.engine.Enqueue(item); err != nil {
+		moved = 0
+	}
+	recording.recordProducerAttempt(phase, 1, moved, -1, q.capacity)
+	return moved
 }
