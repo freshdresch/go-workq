@@ -1,11 +1,39 @@
 # workq
 
-workq is an in-process work queue. Any number of producers add items, and each item goes to
-exactly one of any number of consumers.
+workq is an in-process work queue. Any number of producers add items, and any number of
+consumers acquire them. Each acquired item goes to one consumer.
 
 See the [observability recipes](observability.md) for application-owned progress counts,
 latency measurements, and live collection. See the [overload recipes](overload.md) to choose
 between waiting, rejection, discard, and a submission wait budget.
+
+## Ownership and completion
+
+A successful push reports acceptance. Acquisition removes work from the queue before application
+processing succeeds. Completion belongs to the application. Handler failure does not automatically
+redeliver acquired items, and the queue guarantees neither exactly-once processing nor durable
+delivery. A batch result reports the accepted prefix even on error, subject to the delivery
+exception for races with `Close` described under [Shutdown](#shutdown). Never replay that prefix
+solely because submission returned an error. See
+[Batch reconciliation](lifecycle.md#batch-reconciliation).
+
+FIFO describes queue acquisition order. Concurrent API calls can return in a different order,
+and consumers can start or finish processing in a different order. Concurrent producers have no
+guaranteed wall-clock order, and a whole batch is not admitted atomically.
+
+Elements are shallow value copies. A producer can reuse its input slice's storage after its call
+returns, but pointers, maps, and slice fields still reference shared payloads. Consumers can access
+accepted work before the producer returns. Submission does not establish a safe time to mutate
+referenced payloads. The application defines ownership and synchronization. `Receive` buffers
+belong to callers. `Consume` lends its batch only for the handler call. Copying that batch preserves
+values, not independent payload objects.
+
+`Close` and closed-and-drained observations do not wait for handlers or certify successful
+processing. A peer may still hold acquired work. Join all owned consumers and reconcile their
+outcomes and accepted work. Joining alone does not prove success. Work started asynchronously by
+handlers needs its own owner and completion boundary. See
+[Stop sources, drain, or abort](lifecycle.md#stop-sources-drain-or-abort) and
+[Failure attribution and outcomes](lifecycle.md#failure-attribution-and-outcomes).
 
 ## Example
 

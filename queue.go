@@ -14,8 +14,9 @@ type config struct {
 	producerWait    WaitStrategy
 }
 
-// Queue is a fixed-capacity FIFO work queue on one of the ring queues. Construct it with New.
-// Its zero value is unusable, and it must not be copied after use.
+// Queue is a fixed-capacity FIFO work queue on one of the ring queues. FIFO describes acquisition
+// order, not concurrent API return order or handler start or completion order. Construct it with
+// New. Its zero value is unusable, and it must not be copied after use.
 type Queue[T any] struct {
 	engine          engine[T]
 	maxPushBatch    int
@@ -132,6 +133,10 @@ func (q *Queue[T]) Capacity() int {
 // No producer call overlaps Close, and consumers keep receiving until the queue is closed and
 // drained. If any producer races Close, a nil error promises nothing, even to producers that
 // kept the rule, because a racing producer stalled mid-copy can hold back items pushed after it.
+//
+// Close does not join handlers or establish successful processing. A consumer that sees the
+// queue closed and drained can still have a peer holding acquired work. Join all owned consumers
+// and reconcile their outcomes and accepted work. Joining alone does not prove success.
 //
 // Without a Close, a producer waiting for room after every consumer has returned waits until
 // its ctx is done, so the owner of that ctx must cancel it when the consumers stop.

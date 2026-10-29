@@ -12,6 +12,10 @@ import (
 // closed and drained, and 0 and ctx.Err() if ctx is done first. A zero-length dst returns 0 and
 // nil at once, as io.Reader does.
 //
+// Received values were removed from the queue before processing. Processing failure does not
+// return them automatically. Values are shallow copies, as described in the package's Ownership
+// and completion section.
+//
 // Receive checks ctx only when it would wait. If items are available, it returns them even when
 // ctx is already done, so a canceled caller can still empty its share of the queue. If the
 // queue is closed and drained and ctx is also done, Receive returns ErrClosed.
@@ -33,6 +37,7 @@ func (q *Queue[T]) Receive(ctx context.Context, dst []T) (received int, err erro
 
 // Consume receives items in batches and calls handler with each batch, on the caller's
 // goroutine, until the queue is closed and drained, ctx is done, or handler returns an error.
+// Consume removes each batch from the queue before calling handler.
 // It returns nil once the queue is closed and drained, and ctx.Err() once ctx is done. If
 // handler returns an error, Consume returns it wrapped, so errors.Is finds it, and the items in
 // that batch are not redelivered. Consume does not recover a panic in handler.
@@ -44,7 +49,14 @@ func (q *Queue[T]) Receive(ctx context.Context, dst []T) (received int, err erro
 //
 // Handler gets Consume's ctx, so the code that owns ctx decides when a pipeline stops. Each
 // batch holds at least one item and at most the receive batch limit. Handler must not keep the
-// batch slice after it returns, because the next batch reuses its memory.
+// batch slice after it returns, because the next batch reuses its memory. Copying the batch
+// preserves its values but does not copy referenced payload objects. See the package's Ownership
+// and completion section for payload ownership and synchronization.
+//
+// Concurrent consumers have no guaranteed handler start or completion order. One nil Consume
+// result does not certify global completion. A peer may still hold acquired work. Join all owned
+// consumers and reconcile their outcomes and accepted work. Joining alone does not prove success.
+// Work started asynchronously by handlers needs its own owner and completion boundary.
 //
 // Consume allocates one buffer of the receive batch limit and reuses it for every batch. When a
 // wait reaches its yield phase, Consume clears the whole buffer, so a quiet queue does not keep
@@ -97,6 +109,10 @@ func (q *Queue[T]) receive(
 // 0 and ErrClosed once the queue is closed and drained. A zero-length dst returns 0 and nil,
 // open or closed. Dst belongs to the caller, so it keeps the received items reachable until the
 // caller overwrites them.
+//
+// Received values were removed from the queue before processing. Processing failure does not
+// return them automatically. Values are shallow copies, as described in the package's Ownership
+// and completion section.
 //
 // TryReceive hands dst to the engine through an interface, so dst escapes to the heap. A slice
 // the caller reuses across calls stays allocation-free, but a fresh stack array per call moves

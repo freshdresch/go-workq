@@ -6,6 +6,9 @@ import "context"
 // until there is room, ctx is done, or the queue is closed. It returns nil once item is pushed,
 // and ctx.Err() if ctx is done first.
 //
+// Success reports acceptance, not completion. Item is a shallow value copy, as described in the
+// package's Ownership and completion section.
+//
 // Push checks ctx only when it would wait. While there is room, it pushes even when ctx is
 // already done. PushBatch also checks ctx before each chunk after the first, so with ctx done
 // and room in the queue, Push and a one-chunk PushBatch still push, while a longer PushBatch
@@ -70,6 +73,12 @@ func (q *Queue[T]) Push(ctx context.Context, item T) error {
 // A producer that can wait should get a ctx that its owner cancels when the consumers stop. A
 // producer that waits after every consumer has returned, without a Close, waits until its ctx
 // is done. Waiting has no fairness guarantee, as Push describes.
+//
+// For a returned count n, items[:n] is accepted and items[n:] is unaccepted, even on error.
+// Acceptance is not completion and remains subject to the close-race delivery exception in
+// [Queue.Close]. Never replay the accepted prefix solely because the call returned an error.
+// After return, the caller can reuse the input slice's storage. Its values are shallow copies,
+// so referenced payloads remain shared under the package's Ownership and completion contract.
 //
 // PushBatch hands items to the engine through an interface, so items escapes to the heap. A
 // slice the caller reuses across calls stays allocation-free, but a fresh stack array per call
@@ -154,6 +163,9 @@ func (q *Queue[T]) pushChunk(
 // has been called, it returns ErrClosed and pushes nothing. If it pushed item but raced Close,
 // it returns ErrClosedDuringPush, and item may not be delivered.
 //
+// Success reports acceptance, not completion. Item is a shallow value copy, as described in the
+// package's Ownership and completion section.
+//
 // Producers may call TryPush concurrently. On a queue built with WithSingleProducer, the one
 // producer must serialize all its producer calls.
 //
@@ -182,6 +194,12 @@ func (q *Queue[T]) TryPush(item T) error {
 // Once Close has been called, TryPushBatch returns 0 and ErrClosed, even for an empty items.
 // Otherwise an empty items returns 0 and nil. If it pushed items but raced Close, it returns
 // their count with ErrClosedDuringPush, and those items may not be delivered.
+//
+// For a returned count n, items[:n] is accepted and items[n:] is unaccepted, even on error.
+// Acceptance is not completion and remains subject to the close-race delivery exception in
+// [Queue.Close]. Never replay the accepted prefix solely because the call returned an error.
+// After return, the caller can reuse the input slice's storage. Its values are shallow copies,
+// so referenced payloads remain shared under the package's Ownership and completion contract.
 //
 // TryPushBatch hands items to the engine through an interface, so items escapes to the heap. A
 // slice the caller reuses across calls stays allocation-free, but a fresh stack array per call

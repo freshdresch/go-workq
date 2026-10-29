@@ -1,13 +1,37 @@
-// Package workq is an in-process work queue. Any number of producers add items, and each item
-// goes to exactly one of any number of consumers. Both sides work in batches. Producers add a
-// slice of items in one call, and consumers receive up to a batch of items at a time. A caller
-// that finds no items or no room spins briefly and then, by default, parks. A queue closed
-// after its producers return lets its consumers drain every pushed item.
+// Package workq is an in-process work queue. Any number of producers add items, and any number
+// of consumers acquire them. Each acquired item goes to one consumer. Both sides work in
+// batches. A caller that finds no items or no room spins briefly and then, by default, parks.
 //
 // The queue is built on the fixed-capacity ring queues in this module, which never wait. In the
 // ring/frontier queues, concurrent callers on one side finish in any order, and the other side
 // sees a caller's work once every earlier caller on that side has finished. The ring/dpdk queues
 // follow DPDK's rte_ring. This package adds blocking calls, parking, shutdown, and backpressure.
+//
+// # Ownership and completion
+//
+// A successful push reports acceptance. Acquisition removes work from the queue before
+// application processing succeeds. Completion belongs to the application. Handler failure does
+// not automatically redeliver acquired items. The queue guarantees neither exactly-once
+// processing nor durable delivery. [Queue.PushBatch] and [Queue.TryPushBatch] report the accepted
+// prefix even on error, subject to the delivery exception for races with [Queue.Close]. Never
+// replay that prefix solely because submission returned an error.
+//
+// FIFO describes queue acquisition order. Concurrent API calls can return in a different order,
+// and consumers can start or finish processing in a different order. Concurrent producers have
+// no guaranteed wall-clock order, and a whole batch is not admitted atomically.
+//
+// Elements are shallow value copies. A producer can reuse its input slice's storage after its
+// call returns, but pointers, maps, and slice fields still reference shared payloads. Consumers
+// can access accepted work before the producer returns. Submission does not establish a safe
+// time to mutate referenced payloads. The application defines ownership and synchronization.
+// [Queue.Receive] buffers belong to callers. [Queue.Consume] lends its batch only for the handler
+// call. Copying that batch preserves values, not independent payload objects.
+//
+// [Queue.Close] and closed-and-drained observations do not wait for handlers or certify
+// successful processing. A peer may still hold acquired work. Join all owned consumers and
+// reconcile their outcomes and accepted work. Joining alone does not prove success. Work started
+// asynchronously by handlers needs its own owner and completion boundary. See workq/lifecycle.md
+// in the repository for shutdown, outcome attribution, and batch reconciliation recipes.
 //
 // # Engine selection
 //
