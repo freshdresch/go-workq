@@ -4,7 +4,8 @@ workq is an in-process work queue. Any number of producers add items, and each i
 exactly one of any number of consumers.
 
 See the [observability recipes](observability.md) for application-owned progress counts,
-latency measurements, and live collection.
+latency measurements, and live collection. See the [overload recipes](overload.md) to choose
+between waiting, rejection, discard, and a submission wait budget.
 
 ## Example
 
