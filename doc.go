@@ -117,12 +117,12 @@
 // its call. It processes that stack until it is empty before it returns, and offers new items
 // found along the way in the same way.
 //
-// Second, close from whoever finishes the last work, not from outside. The handlers are
+// Second, on success, close from whoever finishes the last work, not from outside. The handlers are
 // producers, so the channel rule forbids calling Close while any handler might still push. Keep
 // an atomic count of outstanding work.
 //
-//   - Each item counts from just before its push until a handler finishes it. Items on a
-//     handler's local stack still count.
+//   - Each item counts from just before its push until a handler finishes it successfully.
+//     Items on a handler's local stack still count.
 //   - The owner, meaning the code that sets up the queue, holds one count of its own from the
 //     start.
 //   - Each outside producer, such as a seeder, holds one count for its whole life. The owner
@@ -134,10 +134,15 @@
 // At zero, no outside producer can push again, and no item is queued, in a handler, or on a
 // local stack, so no push can be in flight. The owner's count, and adding each producer's count
 // before the producer starts, stop a handler from closing the queue after the first seeder's
-// work is done but before a second seeder has counted itself. A handler that fails must still
-// finish the counts of the items it holds, or the caller must cancel ctx. Otherwise the count
-// never reaches zero, and the other consumers wait until ctx is done. Example_selfFeeding shows
+// work is done but before a second seeder has counted itself. Example_selfFeeding shows
 // the pattern.
+//
+// On failure, record the cause and cancel peers and seeders. Do not decrement failed or abandoned
+// items merely to force zero. Still release owner and seeder lifetime counts as described above,
+// and roll back item counts for provably unaccepted seeds. Join all seeders and consumers before
+// calling Close for cleanup, even if the count remains positive. No handler or seeder can then
+// publish again. The count alone does not establish success. See workq/lifecycle.md in the
+// repository for the self-feeding abort recipe.
 //
 // When a self-feeding queue is a pipeline stage, the handlers of the stage before it are outside
 // producers. The owner holds one count on that stage's behalf and releases it after every
