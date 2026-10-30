@@ -604,33 +604,35 @@ func TestReceiveWaitSpinKeepsClearOnYield(t *testing.T) {
 	assertIdleSide(t, &queue.producers)
 }
 
-// TestReceiveWaitCancelThenCloseParked cancels and then closes with no wait in between. The
-// first event to reach a parked select decides its case, so the cancel sends the consumer to
-// the ctx branch. With one P, Close then runs to completion before the consumer runs, so the
-// closed check in that branch sees the close, and every repetition returns ErrClosed. Only an
-// async preemption between cancel and Close, which needs an OS pause of over 10 ms in a window
-// of a few hundred nanoseconds, could let the consumer run first.
+// TestReceiveWaitCancelThenCloseParked holds cancellation cleanup until Close finishes.
+// The hook proves the parked select chose cancellation before closure was published.
 func TestReceiveWaitCancelThenCloseParked(t *testing.T) {
-	setGOMAXPROCS(t, 1)
-	const repetitions = 50
-	for repetition := range repetitions {
-		synctest.Test(t, func(t *testing.T) {
-			fake := newScriptedEngine[int](8)
-			queue := newTestQueue(t, fake, WithConsumerWait(WaitStrategy{}))
-			ctx, cancel := newWaitContext(t)
-			results := startReceiveWait(ctx, t, queue)
-			synctest.Wait()
-			requireParked(t, &queue.consumers, 1)
+	synctest.Test(t, func(t *testing.T) {
+		fake := newScriptedEngine[int](8)
+		queue := newTestQueue(t, fake, WithConsumerWait(WaitStrategy{}))
+		selected := make(chan struct{})
+		resume := make(chan struct{})
+		queue.hooks.afterParkContext = func() {
+			close(selected)
+			<-resume
+		}
+		ctx, cancel := newWaitContext(t)
+		results := startReceiveWait(ctx, t, queue)
+		// Release the hook before the worker's cleanup joins it if an assertion fails.
+		defer close(resume)
+		synctest.Wait()
+		requireParked(t, &queue.consumers, 1)
 
-			cancel()
-			queue.Close()
+		cancel()
+		<-selected
+		queue.Close()
+		resume <- struct{}{}
 
-			result := awaitResult(t, results)
-			require.Same(t, ErrClosed, result.err, "repetition %d", repetition)
-			require.Zero(t, result.received, "repetition %d", repetition)
-			assertIdleQueue(t, queue)
-		})
-	}
+		result := awaitResult(t, results)
+		require.Same(t, ErrClosed, result.err)
+		require.Zero(t, result.received)
+		assertIdleQueue(t, queue)
+	})
 }
 
 func TestReceiveWaitExtraAttemptLeavesItemsWakesWaiter(t *testing.T) {
@@ -1049,32 +1051,34 @@ func TestPushWaitCancelYielding(t *testing.T) {
 	assertIdleQueue(t, queue)
 }
 
-// TestPushWaitCancelThenCloseParked cancels and then closes with no wait in between. The first
-// event to reach a parked select decides its case, so the cancel sends the producer to the ctx
-// branch. With one P, Close then runs to completion before the producer runs, so the done
-// check in that branch sees the close, and every repetition returns the closed error. Only an
-// async preemption between cancel and Close, which needs an OS pause of over 10 ms in a window
-// of a few hundred nanoseconds, could let the producer run first.
+// TestPushWaitCancelThenCloseParked holds cancellation cleanup until Close finishes.
+// The hook proves the parked select chose cancellation before closure was published.
 func TestPushWaitCancelThenCloseParked(t *testing.T) {
-	setGOMAXPROCS(t, 1)
-	const repetitions = 50
-	for repetition := range repetitions {
-		synctest.Test(t, func(t *testing.T) {
-			queue, _ := newFullTestQueue(t, WithProducerWait(WaitStrategy{}))
-			ctx, cancel := newWaitContext(t)
-			results := startPushWait(ctx, t, queue, 0)
-			synctest.Wait()
-			requireParked(t, &queue.producers, 1)
+	synctest.Test(t, func(t *testing.T) {
+		queue, _ := newFullTestQueue(t, WithProducerWait(WaitStrategy{}))
+		selected := make(chan struct{})
+		resume := make(chan struct{})
+		queue.hooks.afterParkContext = func() {
+			close(selected)
+			<-resume
+		}
+		ctx, cancel := newWaitContext(t)
+		results := startPushWait(ctx, t, queue, 0)
+		// Release the hook before the worker's cleanup joins it if an assertion fails.
+		defer close(resume)
+		synctest.Wait()
+		requireParked(t, &queue.producers, 1)
 
-			cancel()
-			queue.Close()
+		cancel()
+		<-selected
+		queue.Close()
+		resume <- struct{}{}
 
-			result := awaitPushResult(t, results)
-			require.Same(t, ErrClosed, result.err, "repetition %d", repetition)
-			require.Zero(t, result.pushed, "repetition %d", repetition)
-			assertIdleQueue(t, queue)
-		})
-	}
+		result := awaitPushResult(t, results)
+		require.Same(t, ErrClosed, result.err)
+		require.Zero(t, result.pushed)
+		assertIdleQueue(t, queue)
+	})
 }
 
 // TestPushWaitCancelThenCloseMidway cancels a parked producer and then closes, and lets the

@@ -42,9 +42,10 @@ func defaultProducerWait() WaitStrategy {
 // more times, with runtime.Gosched between polls. Last, it parks until the other side wakes it.
 // A caller woken from a park always polls at least once more, even when Yields is 0.
 //
-// The zero value parks after the first empty poll. It never busy-waits, so a caller who passes it
-// by mistake gets slow wakes, not a spinning CPU. New rejects a negative Spins or Yields with an
-// error that wraps ErrInvalidWaitStrategy.
+// The zero value skips the spin and yield polls, enlists, and makes one extra attempt before
+// parking if no progress is possible. It never busy-waits, so a caller who passes it by mistake
+// gets slow wakes, not a spinning CPU. New rejects a negative Spins or Yields with an error that
+// wraps ErrInvalidWaitStrategy.
 //
 // New reads runtime.GOMAXPROCS once, and with GOMAXPROCS at 1 the queue treats Spins as 0. That
 // value and the consumer wake cap can go stale if the program changes GOMAXPROCS later, or if

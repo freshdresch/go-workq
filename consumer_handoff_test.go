@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestConsumerSuccessWithoutHandoffYield(t *testing.T) {
+func TestConsumerSuccessWakesAndCleansUp(t *testing.T) {
 	for _, path := range []string{"poll", "listed", "removed"} {
 		for _, ending := range []string{"open", "cancel", "close"} {
 			t.Run(path+"/"+ending, func(t *testing.T) {
@@ -41,8 +41,6 @@ func TestConsumerSuccessWithoutHandoffYield(t *testing.T) {
 						q.Close()
 					}
 				})
-				yields := 0
-				q.hooks.beforeConsumerHandoffYield = func() { yields++ }
 				dst := make([]int, 1)
 				var received int
 				var finished bool
@@ -56,7 +54,6 @@ func TestConsumerSuccessWithoutHandoffYield(t *testing.T) {
 				assert.True(t, finished)
 				assert.NoError(t, err, "completed dequeue wins over cancellation or Close")
 				assert.Equal(t, []int{1}, dst)
-				assert.Zero(t, yields, "successful acquisition adds no handoff yield")
 				assertSideUnlocked(t, &q.consumers)
 				assertSideUnlocked(t, &q.producers)
 				assertUnlisted(t, own)

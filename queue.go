@@ -38,9 +38,9 @@ type Queue[T any] struct {
 // testHooks lets tests act at points where no engine call runs. Tests set them, and production
 // code never does, so each is nil outside tests.
 type testHooks struct {
-	// beforeConsumerHandoffYield detects regressions that restore a held-batch yield.
-	// Successful acquisitions must never call it.
-	beforeConsumerHandoffYield func()
+	// afterParkContext runs after a parked caller selects cancellation, before cleanup.
+	// Tests can finish Close here without holding a side mutex that Close also needs.
+	afterParkContext func()
 	// afterCloseDone runs in Close after done is closed and before the producer side is marked
 	// closed, with no mutex held.
 	afterCloseDone func()

@@ -201,6 +201,9 @@ func (q *Queue[T]) parkForItems(
 		return 0, false, nil
 	case <-ctx.Done():
 		recording.finishParkSelect(recording.consumerCounters(), ParkContext)
+		if q.hooks.afterParkContext != nil {
+			q.hooks.afterParkContext()
+		}
 		q.leaveConsumerList(recording, caller, false)
 		if q.consumers.load().closed() {
 			received, err = q.drainCheck(recording, dst)
@@ -459,6 +462,9 @@ func (q *Queue[T]) parkForRoom(
 		return 0, false, nil
 	case <-ctx.Done():
 		recording.finishParkSelect(recording.producerCounters(), ParkContext)
+		if q.hooks.afterParkContext != nil {
+			q.hooks.afterParkContext()
+		}
 		q.producers.leaveList(
 			recording.producerCounters(),
 			caller,

@@ -42,6 +42,24 @@ func TestDiagnosticsProducerProbeSampling(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsProducerProbeSampled(t *testing.T) {
+	const attempts = 4096
+	queue, fake := newProducerDiagnosticsQueue(t, 8)
+	fake.pushRaw(sequence(1, 8)...)
+	for range attempts {
+		require.ErrorIs(t, queue.TryPush(9), ErrFull)
+	}
+	snapshot := queue.Diagnostics().Producer
+	assert.Equal(t, uint64(attempts), snapshot.CapacityEligibleAttempts)
+	assert.Positive(t, snapshot.CapacitySelectedProbes)
+	assert.Less(t, snapshot.CapacitySelectedProbes, uint64(attempts))
+	assert.Equal(t, snapshot.CapacitySelectedProbes, snapshot.CapacityCompletedProbes)
+	histogram := snapshot.ReusableSlots[DiagnosticProbe]
+	assert.Equal(t, snapshot.CapacityCompletedProbes, histogram.Count)
+	assert.Equal(t, histogram.Count, histogram.ZeroCount)
+	assert.Zero(t, histogram.Sum)
+}
+
 func TestDiagnosticsProducerProbeAfterWakeAndCleanup(t *testing.T) {
 	for _, scenario := range []struct {
 		name     string

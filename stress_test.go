@@ -45,12 +45,23 @@ type stressStrategy struct {
 	singleConsumerReceives bool
 }
 
-func stressStrategies() []stressStrategy {
-	return []stressStrategy{
+func stressStrategies(singleConsumer bool) []stressStrategy {
+	strategies := []stressStrategy{
 		{name: "Zero", options: bothSidesWait(WaitStrategy{})},
 		{name: "Default", options: nil, singleConsumerReceives: true},
 		{name: "NeverPark", options: bothSidesWait(WaitStrategy{Yields: 4, NeverPark: true})},
 	}
+	if singleConsumer {
+		for _, strategy := range strategies {
+			if strategy.singleConsumerReceives {
+				continue
+			}
+			strategy.name += "Receive"
+			strategy.singleConsumerReceives = true
+			strategies = append(strategies, strategy)
+		}
+	}
+	return strategies
 }
 
 func bothSidesWait(strategy WaitStrategy) []Option {
@@ -223,7 +234,9 @@ func TestStressCancel(t *testing.T) {
 func runStressMatrix(t *testing.T, shutdown stressShutdown) {
 	for _, engineCase := range engineCases() {
 		t.Run(engineCase.name, func(t *testing.T) {
-			for _, pair := range stressStrategies() {
+			cfg, err := resolveConfig(stressCapacity, engineCase.options)
+			require.NoError(t, err)
+			for _, pair := range stressStrategies(cfg.singleConsumer) {
 				t.Run(pair.name, func(t *testing.T) {
 					for _, mode := range diagnosticsModeCases() {
 						t.Run(mode.name, func(t *testing.T) {
