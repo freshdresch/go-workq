@@ -96,13 +96,15 @@ func (q *Queue[T]) push(ctx context.Context, recording *diagnosticsRecording, it
 // PushBatch concurrently. On a queue built with WithSingleProducer, the one producer must
 // serialize all its producer calls.
 func (q *Queue[T]) PushBatch(ctx context.Context, items []T) (pushed int, err error) {
-	var state diagnosticsRecording
-	var recording *diagnosticsRecording
 	if q.diagnostics != nil {
-		state = q.diagnostics.chooseRecording()
-		recording = &state
+		return q.pushBatchWithDiagnostics(ctx, items)
 	}
-	return q.pushBatch(ctx, recording, items)
+	return q.pushBatch(ctx, nil, items)
+}
+
+func (q *Queue[T]) pushBatchWithDiagnostics(ctx context.Context, items []T) (int, error) {
+	recording := q.diagnostics.chooseRecording()
+	return q.pushBatch(ctx, &recording, items)
 }
 
 func (q *Queue[T]) pushBatch(

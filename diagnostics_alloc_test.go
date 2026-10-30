@@ -52,6 +52,20 @@ func TestDiagnosticsAllocTransfers(t *testing.T) {
 							}
 							assertDiagnosticsAllocs(t, 0, run)
 						}
+						if size == 1 {
+							t.Run("PushBatch", func(t *testing.T) {
+								assertDiagnosticsAllocs(t, 0, func() {
+									pushed, err := calls.PushBatch(ctx, items)
+									if pushed != size || err != nil {
+										t.Fatalf("push batch = %d, %v", pushed, err)
+									}
+									moved, err := calls.Receive(ctx, dst)
+									if moved != size || err != nil {
+										t.Fatalf("receive = %d, %v", moved, err)
+									}
+								})
+							})
+						}
 						assertDiagnosticsAllocs(t, 0, func() {
 							snapshot := queue.Diagnostics()
 							if snapshot.Config.Capacity != engineTestCapacity {
