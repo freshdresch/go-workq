@@ -41,7 +41,8 @@ type FailureRecord struct {
 // Summary contains accounting with detached failure records. Error objects remain shared.
 // Live counts need not reconcile. At completion Accepted equals Succeeded + Failed + Abandoned.
 type Summary struct {
-	// Accepted counts published occurrences, independently of submission call completion.
+	// Accepted incorporates each returned accepted prefix when the queue submission
+	// operation returns. Live counts may lag publication.
 	Accepted uint64
 	// Succeeded counts terminal successful occurrences.
 	Succeeded uint64

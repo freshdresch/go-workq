@@ -49,11 +49,11 @@ type Config[T any] struct {
 	Queue QueueConfig
 }
 
-// QueueConfig contains the supported queue settings. Zero batch limits use workq defaults.
+// QueueConfig contains the supported queue settings. Zero batch limits use min(32, Capacity).
 type QueueConfig struct {
-	// MaxPushBatch bounds each publication chunk. A negative value is invalid.
+	// MaxPushBatch bounds each publication chunk. Nonzero values must be in [1, Capacity].
 	MaxPushBatch int
-	// MaxReceiveBatch bounds each acquired batch. A negative value is invalid.
+	// MaxReceiveBatch bounds each acquired batch. Nonzero values must be in [1, Capacity].
 	MaxReceiveBatch int
 	// ProducerWait is copied when supplied. Nil uses the workq default, unlike an explicit zero.
 	ProducerWait *workq.WaitStrategy
