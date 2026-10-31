@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,7 +30,7 @@ func admissionFixture(t *testing.T, capacity int) (*Runner[int], *[]int) {
 	)
 	require.NoError(t, err)
 	var received []int
-	runner := newRunnerState(queue, 16, func() {
+	runner := newRunnerState(queue, 16, 0, func() {
 		queue.Close()
 		buffer := make([]int, capacity)
 		for {
@@ -218,7 +219,7 @@ func TestUnexpectedPushClosureAttribution(t *testing.T) {
 						assert.NotErrorIs(t, result.err, workq.ErrClosedDuringPush)
 					}
 					<-runner.lifecycle.done
-					summary := runner.accounting.snapshot(runner.lifecycle.abortCause)
+					summary := runner.accounting.snapshot(runner.AbortCause())
 					require.Len(t, summary.Failures, 1)
 					assert.Equal(t, BoundaryQueueOperation, summary.Failures[0].Boundary)
 					assert.Equal(t, -1, summary.Failures[0].Worker)
@@ -295,8 +296,9 @@ func TestConcurrentSubmissionsAtPublicAdmissionCutoff(t *testing.T) {
 // Hiding cancellation internals makes context.AfterFunc use this observable registration path.
 type registrationTrackingContext struct {
 	context.Context
-	mu     sync.Mutex
-	active int
+	mu      sync.Mutex
+	active  int
+	started int
 }
 
 func (*registrationTrackingContext) Value(any) any {
@@ -306,6 +308,7 @@ func (*registrationTrackingContext) Value(any) any {
 func (ctx *registrationTrackingContext) AfterFunc(callback func()) func() bool {
 	ctx.mu.Lock()
 	ctx.active++
+	ctx.started++
 	ctx.mu.Unlock()
 	var released sync.Once
 	release := func() {
@@ -371,4 +374,107 @@ func TestSubmissionReleasesCallerCancellationRegistrations(t *testing.T) {
 			})
 		})
 	}
+}
+
+func (ctx *registrationTrackingContext) registrationsStarted() int {
+	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
+	return ctx.started
+}
+
+type noncancelableContext struct{}
+
+func (noncancelableContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (noncancelableContext) Done() <-chan struct{}       { return nil }
+func (noncancelableContext) Err() error                  { return nil }
+func (noncancelableContext) Value(any) any               { return nil }
+
+func TestNoncancelableSubmissionSkipsRegistrations(t *testing.T) {
+	type valueKey struct{}
+	contexts := map[string]context.Context{
+		"Background":      context.Background(),
+		"TODO":            context.TODO(),
+		"value wrapper":   context.WithValue(context.Background(), valueKey{}, 1),
+		"custom nil Done": noncancelableContext{},
+	}
+	for name, caller := range contexts {
+		t.Run(name, func(t *testing.T) {
+			runner, received := admissionFixture(t, 4)
+			defer func() {
+				runner.StopAdmission()
+				_ = runner.Wait()
+			}()
+			runnerCtx := &registrationTrackingContext{Context: runner.ctx}
+			runner.ctx = runnerCtx
+			callerCtx := &registrationTrackingContext{Context: caller}
+			count, err := runner.SubmitBatch(callerCtx, []int{1, 2})
+			require.NoError(t, err)
+			assert.Equal(t, 2, count)
+			assert.Zero(t, callerCtx.registrationsStarted())
+			assert.Zero(t, runnerCtx.registrationsStarted())
+			runner.StopAdmission()
+			require.NoError(t, runner.Wait())
+			assert.Equal(t, []int{1, 2}, *received)
+		})
+	}
+}
+
+type submissionInspectionContext struct {
+	context.Context
+	errCheck  func() error
+	doneCheck func() <-chan struct{}
+}
+
+func (ctx submissionInspectionContext) Err() error            { return ctx.errCheck() }
+func (ctx submissionInspectionContext) Done() <-chan struct{} { return ctx.doneCheck() }
+
+func TestSubmissionContextInspectionOrder(t *testing.T) {
+	runner, received := admissionFixture(t, 4)
+	defer func() {
+		runner.StopAdmission()
+		_ = runner.Wait()
+	}()
+	unexpected := submissionInspectionContext{
+		Context: context.Background(),
+		errCheck: func() error {
+			t.Error("unexpected caller Err inspection")
+			return nil
+		},
+		doneCheck: func() <-chan struct{} {
+			t.Error("unexpected caller Done inspection")
+			return nil
+		},
+	}
+	count, err := runner.SubmitBatch(unexpected, nil)
+	assert.Zero(t, count)
+	require.NoError(t, err)
+	errChecked := false
+	checked := submissionInspectionContext{
+		Context: context.Background(),
+		errCheck: func() error {
+			assert.Equal(t, 1, runner.lifecycle.active)
+			errChecked = true
+			return nil
+		},
+		doneCheck: func() <-chan struct{} {
+			assert.True(t, errChecked)
+			assert.Equal(t, 1, runner.lifecycle.active)
+			return nil
+		},
+	}
+	require.NoError(t, runner.Submit(checked, 1))
+	checked.errCheck = func() error {
+		assert.Equal(t, 1, runner.lifecycle.active)
+		return context.Canceled
+	}
+	checked.doneCheck = unexpected.doneCheck
+	require.ErrorIs(t, runner.Submit(checked, 2), context.Canceled)
+	runner.StopAdmission()
+	for _, items := range [][]int{nil, {3}} {
+		count, err = runner.SubmitBatch(unexpected, items)
+		assert.Zero(t, count)
+		assert.Same(t, ErrStopped, err)
+	}
+	require.NoError(t, runner.Wait())
+	assert.Equal(t, []int{1}, *received)
 }

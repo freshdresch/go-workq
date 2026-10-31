@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/freshdresch/go-data-structures/workq"
 )
@@ -32,7 +33,7 @@ func New[T any](config Config[T]) (*Runner[T], error) {
 	if err != nil {
 		return nil, err
 	}
-	runner := newRunnerState(queue, resolved.ErrorLimit, nil)
+	runner := newRunnerState(queue, resolved.ErrorLimit, resolved.Workers, nil)
 	runner.config = resolved
 	runner.batchLimit = queue.Diagnostics().Config.MaxReceiveBatch
 	runner.lifecycle.finish = runner.finishWorkers
@@ -43,13 +44,17 @@ func New[T any](config Config[T]) (*Runner[T], error) {
 	return runner, nil
 }
 
+type abortRecord struct {
+	cause error
+}
+
 type lifecycle struct {
 	mu                 sync.Mutex
 	stopped            bool
 	active             int
 	admissionsDone     chan struct{}
 	coordinatorStarted bool
-	abortCause         error
+	abortRecord        atomic.Pointer[abortRecord]
 	aborting           chan struct{}
 	done               chan struct{}
 	completed          bool
@@ -57,13 +62,21 @@ type lifecycle struct {
 	finish             func()
 }
 
-func newRunnerState[T any](queue *workq.Queue[T], errorLimit int, finish func()) *Runner[T] {
+func newRunnerState[T any](
+	queue *workq.Queue[T],
+	errorLimit int,
+	workerCount int,
+	finish func(),
+) *Runner[T] {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Runner[T]{
-		queue:      queue,
-		ctx:        ctx,
-		cancel:     cancel,
-		accounting: accounting{errorLimit: errorLimit},
+		queue:  queue,
+		ctx:    ctx,
+		cancel: cancel,
+		accounting: accounting{
+			errorLimit:     errorLimit,
+			workerOutcomes: make([]outcomeCounters, workerCount),
+		},
 		lifecycle: lifecycle{
 			admissionsDone: make(chan struct{}),
 			aborting:       make(chan struct{}),
@@ -97,17 +110,21 @@ func (r *Runner[T]) SubmitBatch(ctx context.Context, items []T) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
-	submitCtx, cancel := context.WithCancelCause(context.Background())
-	callerRegistration := registerCancellation(ctx, func() { cancel(ctx.Err()) })
-	defer callerRegistration.stopAndJoin()
-	abortRegistration := registerCancellation(r.ctx, func() { cancel(context.Canceled) })
-	defer abortRegistration.stopAndJoin()
-	defer cancel(nil)
-	if err := ctx.Err(); err != nil {
-		cancel(err)
-	}
-	if r.ctx.Err() != nil {
-		cancel(context.Canceled)
+	submitCtx := r.ctx
+	if ctx.Done() != nil {
+		var cancel context.CancelCauseFunc
+		submitCtx, cancel = context.WithCancelCause(context.Background())
+		callerRegistration := registerCancellation(ctx, func() { cancel(ctx.Err()) })
+		defer callerRegistration.stopAndJoin()
+		abortRegistration := registerCancellation(r.ctx, func() { cancel(context.Canceled) })
+		defer abortRegistration.stopAndJoin()
+		defer cancel(nil)
+		if err := ctx.Err(); err != nil {
+			cancel(err)
+		}
+		if r.ctx.Err() != nil {
+			cancel(context.Canceled)
+		}
 	}
 	accepted, err := r.queue.PushBatch(submitCtx, items)
 	r.accounting.recordAccepted(uint64(accepted))

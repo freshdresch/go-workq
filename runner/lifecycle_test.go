@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/freshdresch/go-data-structures/workq"
 )
 
 func assertChannelOpen(t *testing.T, channel <-chan struct{}) {
@@ -29,7 +31,7 @@ func TestAbortPublishesBeforeJoin(t *testing.T) {
 	runner.abort(cause)
 	<-runner.lifecycle.aborting
 	assert.ErrorIs(t, runner.ctx.Err(), context.Canceled)
-	assert.Same(t, cause, runner.lifecycle.abortCause)
+	assert.Same(t, cause, runner.AbortCause())
 	assertChannelOpen(t, runner.lifecycle.done)
 	count, err := runner.SubmitBatch(context.Background(), nil)
 	assert.Zero(t, count)
@@ -55,11 +57,11 @@ func TestConcurrentAbortsPreserveFirstCause(t *testing.T) {
 		close(start)
 		callers.Wait()
 		<-runner.lifecycle.aborting
-		cause := runner.lifecycle.abortCause
+		cause := runner.AbortCause()
 		require.NotNil(t, cause)
 		assert.Contains(t, []error{ErrAborted, causes[1], causes[2]}, cause)
 		runner.abort(errors.New("late candidate"))
-		assert.Same(t, cause, runner.lifecycle.abortCause)
+		assert.Same(t, cause, runner.AbortCause())
 		assertChannelOpen(t, runner.lifecycle.done)
 		runner.unregisterSubmission()
 		<-runner.lifecycle.done
@@ -72,29 +74,51 @@ func TestCoordinatorAndCompletionWaitForAbortPublication(t *testing.T) {
 		runner, _ := admissionFixture(t, 4)
 		entered := make(chan struct{})
 		release := make(chan struct{})
-		defer releaseTestBarrier(release)
+		var callers sync.WaitGroup
+		defer func() {
+			releaseTestBarrier(release)
+			callers.Wait()
+			_ = runner.Wait()
+		}()
 		cancel := runner.cancel
+		var firstCancel atomic.Bool
 		runner.cancel = func() {
-			close(entered)
-			<-release
+			if firstCancel.CompareAndSwap(false, true) {
+				close(entered)
+				<-release
+			}
 			cancel()
 		}
+		cause := errors.New("first committed abort")
 		abortReturned := make(chan struct{})
-		go func() {
-			runner.abort(nil)
+		callers.Go(func() {
+			runner.abort(cause)
 			close(abortReturned)
-		}()
+		})
 		<-entered
+		competingReturned := make(chan struct{})
+		callers.Go(func() {
+			runner.abort(errors.New("competing abort"))
+			close(competingReturned)
+		})
 		synctest.Wait()
-		assertChannelOpen(t, runner.lifecycle.aborting)
-		assertChannelOpen(t, runner.lifecycle.done)
+		assert.Same(t, cause, runner.AbortCause())
+		assert.NoError(t, runner.ctx.Err())
+		assertChannelOpen(t, runner.ctx.Done())
+		assertChannelOpen(t, runner.Aborting())
+		assertChannelOpen(t, runner.Done())
+		assertChannelOpen(t, abortReturned)
+		assertChannelOpen(t, competingReturned)
 		require.NoError(t, runner.queue.TryPush(1))
-		// Restore the ordinary cleanup cancel before the coordinator can finish.
-		runner.cancel = cancel
 		close(release)
-		<-abortReturned
-		<-runner.lifecycle.done
-		assert.ErrorIs(t, runner.lifecycle.finalErr, ErrAborted)
+		callers.Wait()
+		<-runner.Done()
+		assertChannelClosed(t, abortReturned)
+		assertChannelClosed(t, competingReturned)
+		assertChannelClosed(t, runner.Aborting())
+		assert.ErrorIs(t, runner.ctx.Err(), context.Canceled)
+		assert.Same(t, cause, runner.AbortCause())
+		assert.Same(t, cause, runner.Wait())
 	})
 }
 
@@ -112,7 +136,7 @@ func TestCompletionWinsBeforeLateAbort(t *testing.T) {
 		runner.stopAdmission()
 		<-runner.lifecycle.done
 		runner.abort(errors.New("too late"))
-		assert.Nil(t, runner.lifecycle.abortCause)
+		assert.Nil(t, runner.AbortCause())
 		assertChannelOpen(t, runner.lifecycle.aborting)
 		if operationalFailure {
 			assert.ErrorIs(t, runner.lifecycle.finalErr, failure)
@@ -139,19 +163,43 @@ func TestBlockedSubmissionReportsCallerDeadline(t *testing.T) {
 
 func TestAbortReleasesBlockedSubmission(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		runner, received := admissionFixture(t, 1)
-		results := make(chan submissionResult, 1)
-		go func() {
-			count, err := runner.SubmitBatch(context.Background(), []int{1, 2})
-			results <- submissionResult{count, err}
+		runner, received := admissionFixture(t, 2)
+		guard := &admissionBarrierContext{
+			Context: context.Background(),
+			entered: make(chan struct{}),
+			release: make(chan struct{}),
+		}
+		var producers sync.WaitGroup
+		defer func() {
+			runner.Abort(nil)
+			releaseTestBarrier(guard.release)
+			producers.Wait()
+			_ = runner.Wait()
 		}()
+		guardResult := make(chan error, 1)
+		producers.Go(func() { guardResult <- runner.Submit(guard, 7) })
+		<-guard.entered
+		items := []int{1, 2, 3, 4, 5, 6}
+		assert.Greater(t, len(items), runner.queue.Diagnostics().Config.MaxPushBatch)
+		results := make(chan submissionResult, 1)
+		producers.Go(func() {
+			count, err := runner.SubmitBatch(context.Background(), items)
+			results <- submissionResult{count, err}
+		})
 		synctest.Wait()
 		runner.abort(nil)
 		result := <-results
-		assert.Equal(t, 1, result.accepted)
+		assert.Equal(t, 2, result.accepted)
 		require.ErrorIs(t, result.err, context.Canceled)
+		assert.Equal(t, []int{3, 4, 5, 6}, items[result.accepted:])
+		assertChannelOpen(t, runner.Done())
+		assert.ErrorIs(t, runner.queue.TryPush(8), workq.ErrFull)
+		releaseTestBarrier(guard.release)
+		require.ErrorIs(t, <-guardResult, context.Canceled)
+		producers.Wait()
 		<-runner.lifecycle.done
-		assert.Equal(t, []int{1}, *received)
+		assert.Equal(t, []int{1, 2}, *received)
+		assert.Equal(t, uint64(2), runner.Summary().Accepted)
 		assert.Empty(t, runner.accounting.snapshot(nil).Failures)
 	})
 }
@@ -517,4 +565,135 @@ func TestConcurrentLifecycleCallsAndObservers(t *testing.T) {
 		assert.Equal(t, signal, runner.Aborting())
 		<-signal
 	})
+}
+
+func TestCancelableSubmissionCauseSelection(t *testing.T) {
+	for _, scenario := range []string{
+		"cancel cause", "deadline", "caller first", "abort first", "concurrent deadline abort",
+	} {
+		t.Run(scenario, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				runner, _ := admissionFixture(t, 1)
+				require.NoError(t, runner.Submit(context.Background(), 1))
+				var caller context.Context
+				var cancel context.CancelFunc
+				cancelCause := errors.New("caller cause must not escape")
+				if scenario == "cancel cause" {
+					ctx, stop := context.WithCancelCause(context.Background())
+					caller = ctx
+					cancel = func() { stop(cancelCause) }
+				} else {
+					caller, cancel = context.WithTimeout(context.Background(), time.Second)
+				}
+				defer cancel()
+				barrier := &cancellationBarrierContext{
+					Context: caller,
+					entered: make(chan struct{}),
+					release: make(chan struct{}),
+				}
+				tracked := &registrationTrackingContext{Context: caller}
+				var submitCtx context.Context = tracked
+				if scenario == "abort first" {
+					submitCtx = barrier
+				}
+				var callers sync.WaitGroup
+				defer func() {
+					runner.Abort(nil)
+					releaseTestBarrier(barrier.release)
+					callers.Wait()
+					_ = runner.Wait()
+				}()
+				returned := make(chan error, 1)
+				callers.Go(func() { returned <- runner.Submit(submitCtx, 2) })
+				synctest.Wait()
+				if scenario != "abort first" {
+					assert.Equal(t, 1, tracked.registrationsStarted())
+				}
+				want := context.DeadlineExceeded
+				switch scenario {
+				case "cancel cause":
+					cancel()
+					want = context.Canceled
+				case "caller first":
+					<-caller.Done()
+					synctest.Wait()
+					assert.Len(t, returned, 1)
+					runner.Abort(nil)
+				case "abort first":
+					<-barrier.entered
+					runner.Abort(nil)
+					synctest.Wait()
+					assertChannelOpen(t, runner.Done())
+					assert.Empty(t, returned)
+					releaseTestBarrier(barrier.release)
+					want = context.Canceled
+				case "concurrent deadline abort":
+					callers.Go(func() {
+						<-caller.Done()
+						runner.Abort(nil)
+					})
+				}
+				err := <-returned
+				if scenario == "concurrent deadline abort" {
+					allowed := errors.Is(err, context.Canceled)
+					allowed = allowed || errors.Is(err, context.DeadlineExceeded)
+					assert.True(t, allowed, "unexpected submission error: %v", err)
+				} else {
+					assert.Equal(t, want, err)
+				}
+				assert.NotErrorIs(t, err, cancelCause)
+				runner.StopAdmission()
+				callers.Wait()
+				_ = runner.Wait()
+				assert.Zero(t, tracked.registrations())
+				assert.Empty(t, runner.Summary().Failures)
+			})
+		})
+	}
+}
+
+func TestCancelableSubmissionFallbackRegistrations(t *testing.T) {
+	for _, distantDeadline := range []bool{false, true} {
+		name := map[bool]string{false: "custom open Done", true: "distant deadline"}[distantDeadline]
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				runner, _ := admissionFixture(t, 1)
+				require.NoError(t, runner.Submit(context.Background(), 1))
+				caller, cancel := context.WithCancel(context.Background())
+				if distantDeadline {
+					cancel()
+					caller, cancel = context.WithTimeout(context.Background(), time.Hour)
+				}
+				defer cancel()
+				callerCtx := &registrationTrackingContext{Context: caller}
+				runnerCtx := &registrationTrackingContext{Context: runner.ctx}
+				runner.ctx = runnerCtx
+				var producers sync.WaitGroup
+				defer func() {
+					runner.Abort(nil)
+					producers.Wait()
+					_ = runner.Wait()
+				}()
+				returned := make(chan error, 1)
+				producers.Go(func() { returned <- runner.Submit(callerCtx, 2) })
+				synctest.Wait()
+				assert.Equal(t, 1, callerCtx.registrationsStarted())
+				assert.Equal(t, 1, runnerCtx.registrationsStarted())
+				assert.Equal(t, 1, callerCtx.registrations())
+				assert.Equal(t, 1, runnerCtx.registrations())
+				assert.Nil(t, callerCtx.Err())
+				runner.Abort(nil)
+				require.ErrorIs(t, <-returned, context.Canceled)
+				producers.Wait()
+				_ = runner.Wait()
+				synctest.Wait()
+				assert.Zero(t, callerCtx.registrations())
+				assert.Zero(t, runnerCtx.registrations())
+				started := callerCtx.registrationsStarted()
+				cancel()
+				synctest.Wait()
+				assert.Equal(t, started, callerCtx.registrationsStarted())
+			})
+		})
+	}
 }

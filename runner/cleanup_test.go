@@ -221,3 +221,63 @@ func joinRunnerOnCleanup[T any](t *testing.T, runner *Runner[T]) {
 		_ = runner.Wait()
 	})
 }
+
+func TestConcurrentSummaryThroughQueuedCleanup(t *testing.T) {
+	config := runtimeConfig(4)
+	config.Capacity = 64
+	config.Queue.MaxReceiveBatch = 1
+	entered := make(chan struct{}, 4)
+	release := make(chan struct{})
+	defer releaseTestBarrier(release)
+	config.OnTerminal = func(_ int, outcome ItemOutcome) error {
+		if outcome.State == TerminalSucceeded {
+			entered <- struct{}{}
+			<-release
+		}
+		return nil
+	}
+	runner, err := New(config)
+	require.NoError(t, err)
+	joinRunnerOnCleanup(t, runner)
+	stopReader := make(chan struct{})
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		for {
+			select {
+			case <-stopReader:
+				return
+			default:
+				snapshot := runner.Summary()
+				assert.LessOrEqual(t, snapshot.Accepted, uint64(40))
+				assert.LessOrEqual(t, snapshot.Succeeded, uint64(4))
+				assert.Zero(t, snapshot.Failed)
+			}
+		}
+	}()
+	defer func() {
+		close(stopReader)
+		<-readerDone
+	}()
+	var producers sync.WaitGroup
+	for producer := range 4 {
+		producers.Go(func() {
+			for item := range 10 {
+				assert.NoError(t, runner.Submit(context.Background(), producer*10+item))
+			}
+		})
+	}
+	producers.Wait()
+	for range 4 {
+		<-entered
+	}
+	cause := errors.New("abort queued work")
+	runner.Abort(cause)
+	close(release)
+	require.ErrorIs(t, runner.Wait(), cause)
+	expected := Summary{Accepted: 40, Succeeded: 4, Abandoned: 36, Attempts: 4, AbortCause: cause}
+	for range 3 {
+		assert.Same(t, cause, runner.Wait())
+		assert.Equal(t, expected, runner.Summary())
+	}
+}

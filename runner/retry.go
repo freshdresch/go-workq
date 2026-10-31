@@ -52,6 +52,7 @@ func (r *Runner[T]) waitForRetry(metadata []retryItem, timer *retryTimer) bool {
 
 func (r *Runner[T]) processHeldBatch(
 	index int,
+	group *outcomeCounters,
 	batch []T,
 	outcomes []ItemOutcome,
 	metadata []retryItem,
@@ -61,15 +62,26 @@ func (r *Runner[T]) processHeldBatch(
 	due := held
 	for held != 0 {
 		if r.AbortCause() != nil {
-			r.abandonHeld(index, batch[:held], outcomes[:held], metadata[:held])
+			r.abandonHeld(index, group, batch[:held], outcomes[:held], metadata[:held])
 			return
 		}
 		r.invokeHeld(index, batch[:due], outcomes[:due], metadata[:due])
 		// Classification finishes before any callback can block or request another abort.
+		var delta outcomeDelta
+		if r.config.OnTerminal == nil {
+			r.awaitAbortPublication()
+		}
 		remaining := 0
 		for position := range held {
 			if position < due && !metadata[position].pending {
-				r.finalizeBatch(index, batch[position:position+1], outcomes[position:position+1])
+				if r.config.OnTerminal == nil {
+					delta.add(outcomeToDelta(outcomes[position]))
+					var zero T
+					batch[position] = zero
+					outcomes[position] = ItemOutcome{}
+				} else {
+					r.finalizeBatch(index, group, batch[position:position+1], outcomes[position:position+1])
+				}
 				metadata[position] = retryItem{}
 				continue
 			}
@@ -80,12 +92,13 @@ func (r *Runner[T]) processHeldBatch(
 		clear(batch[remaining:held])
 		clear(outcomes[:held])
 		clear(metadata[remaining:held])
+		group.publish(delta)
 		held = remaining
 		if held == 0 {
 			return
 		}
 		if !r.waitForRetry(metadata[:held], timer) {
-			r.abandonHeld(index, batch[:held], outcomes[:held], metadata[:held])
+			r.abandonHeld(index, group, batch[:held], outcomes[:held], metadata[:held])
 			return
 		}
 		due = compactDue(batch[:held], metadata[:held], time.Now())
@@ -167,6 +180,7 @@ func (r *Runner[T]) abandonmentError(item retryItem) error {
 
 func (r *Runner[T]) abandonHeld(
 	index int,
+	group *outcomeCounters,
 	batch []T,
 	outcomes []ItemOutcome,
 	metadata []retryItem,
@@ -177,7 +191,7 @@ func (r *Runner[T]) abandonHeld(
 			State: TerminalAbandoned, Attempts: item.attempts, Err: r.abandonmentError(item),
 		}
 	}
-	r.finalizeBatch(index, batch, outcomes)
+	r.finalizeBatch(index, group, batch, outcomes)
 	clear(metadata)
 }
 

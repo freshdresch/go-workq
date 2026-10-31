@@ -4,6 +4,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 
 	"github.com/freshdresch/go-data-structures/workq"
 )
@@ -58,48 +59,106 @@ type Summary struct {
 	AbortCause error
 }
 
+type outcomeDelta struct {
+	succeeded uint64
+	failed    uint64
+	abandoned uint64
+	attempts  uint64
+}
+
+type outcomeCounters struct {
+	succeeded atomic.Uint64
+	failed    atomic.Uint64
+	abandoned atomic.Uint64
+	attempts  atomic.Uint64
+}
+
+func outcomeToDelta(outcome ItemOutcome) outcomeDelta {
+	delta := outcomeDelta{attempts: uint64(outcome.Attempts)}
+	switch outcome.State {
+	case TerminalSucceeded:
+		delta.succeeded = 1
+	case TerminalFailed:
+		delta.failed = 1
+	case TerminalAbandoned:
+		delta.abandoned = 1
+	}
+	return delta
+}
+
+func (delta *outcomeDelta) add(other outcomeDelta) {
+	delta.succeeded += other.succeeded
+	delta.failed += other.failed
+	delta.abandoned += other.abandoned
+	delta.attempts += other.attempts
+}
+
+func (c *outcomeCounters) publish(delta outcomeDelta) {
+	if delta.succeeded != 0 {
+		c.succeeded.Add(delta.succeeded)
+	}
+	if delta.failed != 0 {
+		c.failed.Add(delta.failed)
+	}
+	if delta.abandoned != 0 {
+		c.abandoned.Add(delta.abandoned)
+	}
+	if delta.attempts != 0 {
+		c.attempts.Add(delta.attempts)
+	}
+}
+
+func (c *outcomeCounters) snapshot() outcomeDelta {
+	return outcomeDelta{
+		succeeded: c.succeeded.Load(),
+		failed:    c.failed.Load(),
+		abandoned: c.abandoned.Load(),
+		attempts:  c.attempts.Load(),
+	}
+}
+
 type accounting struct {
-	mu         sync.Mutex
-	errorLimit int
-	summary    Summary
+	accepted        atomic.Uint64
+	workerOutcomes  []outcomeCounters
+	cleanupOutcomes outcomeCounters
+	mu              sync.Mutex
+	errorLimit      int
+	failures        []FailureRecord
+	omittedFailures uint64
 }
 
 func (a *accounting) recordAccepted(count uint64) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.summary.Accepted += count
-}
-
-func (a *accounting) recordOutcome(outcome ItemOutcome) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.summary.Attempts += uint64(outcome.Attempts)
-	switch outcome.State {
-	case TerminalSucceeded:
-		a.summary.Succeeded++
-	case TerminalFailed:
-		a.summary.Failed++
-	case TerminalAbandoned:
-		a.summary.Abandoned++
-	}
+	a.accepted.Add(count)
 }
 
 func (a *accounting) recordFailure(record FailureRecord) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if len(a.summary.Failures) >= a.errorLimit {
-		a.summary.OmittedFailures++
+	if len(a.failures) >= a.errorLimit {
+		a.omittedFailures++
 		return
 	}
-	a.summary.Failures = append(a.summary.Failures, record)
+	a.failures = append(a.failures, record)
 }
 
 func (a *accounting) snapshot(abortCause error) Summary {
+	snapshot := Summary{Accepted: a.accepted.Load(), AbortCause: abortCause}
+	for index := range a.workerOutcomes {
+		delta := a.workerOutcomes[index].snapshot()
+		snapshot.Succeeded += delta.succeeded
+		snapshot.Failed += delta.failed
+		snapshot.Abandoned += delta.abandoned
+		snapshot.Attempts += delta.attempts
+	}
+	cleanup := a.cleanupOutcomes.snapshot()
+	snapshot.Succeeded += cleanup.succeeded
+	snapshot.Failed += cleanup.failed
+	snapshot.Abandoned += cleanup.abandoned
+	snapshot.Attempts += cleanup.attempts
 	a.mu.Lock()
-	defer a.mu.Unlock()
-	snapshot := a.summary
-	snapshot.Failures = slices.Clone(snapshot.Failures)
-	snapshot.AbortCause = abortCause
+	snapshot.Failures = slices.Clone(a.failures)
+	snapshot.OmittedFailures = a.omittedFailures
+	a.mu.Unlock()
 	return snapshot
 }
 

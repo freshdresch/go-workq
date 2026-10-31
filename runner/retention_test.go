@@ -16,63 +16,71 @@ type retainedPayload struct {
 }
 
 func TestProcessingClearsOwnedStorageAndPreservesHandlerResults(t *testing.T) {
-	for _, scenario := range []string{"success", "failure", "aborted", "invalid result"} {
-		t.Run(scenario, func(t *testing.T) {
-			queue, err := workq.New[*retainedPayload](2)
-			require.NoError(t, err)
-			runner := newRunnerState(queue, 1, func() {})
-			runner.config.FailureMode = Continue
-			failure := errors.New("handler error")
-			results := []Result{{}, {}}
-			expectedResults := []Result{{}, {}}
-			if scenario == "failure" {
-				results[1] = Result{State: ResultFailed, Err: failure}
-				expectedResults[1] = results[1]
-			}
-			if scenario == "invalid result" {
-				results[1] = Result{State: ResultSucceeded, Err: failure}
-				expectedResults[1] = results[1]
-			}
-			calls := 0
-			runner.config.Handler = func(context.Context, []*retainedPayload) []Result {
-				calls++
-				return results
-			}
-			batch := []*retainedPayload{{value: 1}, {value: 2}}
-			outcomes := make([]ItemOutcome, 2)
-			callbacks := 0
-			runner.config.OnTerminal = func(item *retainedPayload, outcome ItemOutcome) error {
-				callbacks++
-				assert.Equal(t, callbacks, item.value)
-				if callbacks == 2 {
-					assert.Nil(t, batch[0])
-					assert.Equal(t, ItemOutcome{}, outcomes[0])
+	for _, callbacksEnabled := range []bool{false, true} {
+		for _, scenario := range []string{"success", "failure", "aborted", "invalid result"} {
+			t.Run(scenario, func(t *testing.T) {
+				queue, err := workq.New[*retainedPayload](2)
+				require.NoError(t, err)
+				runner := newRunnerState(queue, 1, 1, func() {})
+				runner.config.FailureMode = Continue
+				failure := errors.New("handler error")
+				results := []Result{{}, {}}
+				expectedResults := []Result{{}, {}}
+				if scenario == "failure" {
+					results[1] = Result{State: ResultFailed, Err: failure}
+					expectedResults[1] = results[1]
+				}
+				if scenario == "invalid result" {
+					results[1] = Result{State: ResultSucceeded, Err: failure}
+					expectedResults[1] = results[1]
+				}
+				calls := 0
+				runner.config.Handler = func(context.Context, []*retainedPayload) []Result {
+					calls++
+					return results
+				}
+				batch := []*retainedPayload{{value: 1}, {value: 2}}
+				outcomes := make([]ItemOutcome, 2)
+				callbacks := 0
+				if callbacksEnabled {
+					runner.config.OnTerminal = func(item *retainedPayload, outcome ItemOutcome) error {
+						callbacks++
+						assert.Equal(t, callbacks, item.value)
+						if callbacks == 2 {
+							assert.Nil(t, batch[0])
+							assert.Equal(t, ItemOutcome{}, outcomes[0])
+						}
+						if scenario == "aborted" {
+							assert.Equal(t, TerminalAbandoned, outcome.State)
+							assert.Same(t, ErrAborted, outcome.Err)
+						}
+						return nil
+					}
+				}
+				// The fixture holds admission so its coordinator cannot race private processing.
+				require.True(t, runner.registerSubmission())
+				if scenario == "aborted" {
+					runner.Abort(nil)
+				}
+				runner.processBatch(0, batch, outcomes)
+				assert.Equal(t, []*retainedPayload{nil, nil}, batch)
+				assert.Equal(t, make([]ItemOutcome, 2), outcomes)
+				assert.Equal(t, expectedResults, results)
+				if callbacksEnabled {
+					assert.Equal(t, 2, callbacks)
+				} else {
+					assert.Zero(t, callbacks)
 				}
 				if scenario == "aborted" {
-					assert.Equal(t, TerminalAbandoned, outcome.State)
-					assert.Same(t, ErrAborted, outcome.Err)
+					assert.Zero(t, calls)
+				} else {
+					assert.Equal(t, 1, calls)
 				}
-				return nil
-			}
-			// The fixture holds admission so its coordinator cannot race private processing.
-			require.True(t, runner.registerSubmission())
-			if scenario == "aborted" {
-				runner.Abort(nil)
-			}
-			runner.processBatch(0, batch, outcomes)
-			assert.Equal(t, []*retainedPayload{nil, nil}, batch)
-			assert.Equal(t, make([]ItemOutcome, 2), outcomes)
-			assert.Equal(t, expectedResults, results)
-			assert.Equal(t, 2, callbacks)
-			if scenario == "aborted" {
-				assert.Zero(t, calls)
-			} else {
-				assert.Equal(t, 1, calls)
-			}
-			runner.unregisterSubmission()
-			runner.StopAdmission()
-			_ = runner.Wait()
-		})
+				runner.unregisterSubmission()
+				runner.StopAdmission()
+				_ = runner.Wait()
+			})
+		}
 	}
 }
 
@@ -129,7 +137,7 @@ func TestWorkerStorageIsClearBeforeCompletion(t *testing.T) {
 func TestQueuedCleanupClearsReusableStorageBeforeNextBatch(t *testing.T) {
 	queue, err := workq.New[*retainedPayload](4, workq.WithSingleConsumer())
 	require.NoError(t, err)
-	runner := newRunnerState(queue, 1, func() {})
+	runner := newRunnerState(queue, 1, 0, func() {})
 	runner.batchLimit = 2
 	require.True(t, runner.registerSubmission())
 	runner.Abort(nil)
@@ -157,7 +165,7 @@ func TestQueuedCleanupClearsReusableStorageBeforeNextBatch(t *testing.T) {
 		for position := range count {
 			outcomes[position] = ItemOutcome{State: TerminalAbandoned, Err: ErrAborted}
 		}
-		runner.finalizeBatch(-1, buffer[:count], outcomes[:count])
+		runner.finalizeBatch(-1, &runner.accounting.cleanupOutcomes, buffer[:count], outcomes[:count])
 		assert.Equal(t, make([]*retainedPayload, 2), buffer)
 		assert.Equal(t, make([]ItemOutcome, 2), outcomes)
 	}

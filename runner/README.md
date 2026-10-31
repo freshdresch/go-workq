@@ -114,7 +114,9 @@ deadlock every worker. The runner does not infer quiescence or support recursive
 ## Reports and memory
 
 Read final `Summary` and `Diagnostics` after `Wait`. Accepted occurrences then reconcile as
-`Accepted == Succeeded + Failed + Abandoned`. Live counts can represent different instants.
+`Accepted == Succeeded + Failed + Abandoned`. Live counts can represent different instants and
+need not reconcile. Each `Summary` call costs O(workers + retained failures): it reads the worker
+counters and copies the retained failure records.
 Returned failure slices are detached, but application error objects remain shared and immutable.
 `Wait` returns an aggregate of retained operational failures, otherwise the abort cause, otherwise
 nil. `errors.Is` matches retained causes. `ErrOmittedFailures` reports truncation. `AbortCause`
@@ -134,9 +136,14 @@ O(W) transient payload value copies.
 `Items` and failing `WholeBatch` allocate at most B result entries per invocation. Native response
 storage belongs to the handler and must remain stable until the runner consumes it.
 
-P concurrent admitted submissions add O(P) bookkeeping and cancellation registrations. Queue
-capacity does not bound P. Caller input slices, referenced payload memory, application
-reconciliation
-storage and handler-created resources are outside the payload-slot bound. Bound source concurrency
+Accounting uses one atomic Accepted counter and four atomic outcome counters per worker, plus
+four for queued cleanup. Outcome counters track Succeeded, Failed, Abandoned and Attempts.
+
+P concurrent admitted submissions add O(P) bookkeeping. Callers whose context has a nil `Done`
+channel use the runner context directly and avoid the cancellation bridge and its registrations.
+Callers with a non-nil `Done` channel retain the bridge. Before submission returns, the runner stops
+its caller and abort registrations and joins any callbacks that started. Queue capacity does not
+bound P. Caller input slices, referenced payload memory, application reconciliation storage and
+handler-created resources are outside the payload-slot bound. Bound source concurrency
 and input batch sizes when total memory must be bounded. Completion clears runner references to
 terminal payloads and joins cancellation registrations, workers and cleanup.

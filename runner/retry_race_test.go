@@ -113,7 +113,14 @@ func TestRetryClassificationTable(t *testing.T) {
 					metadata[0].lastErr = previous
 				}
 				var timer retryTimer
-				runner.processHeldBatch(0, []int{1}, make([]ItemOutcome, 1), metadata, &timer)
+				runner.processHeldBatch(
+					0,
+					&runner.accounting.workerOutcomes[0],
+					[]int{1},
+					make([]ItemOutcome, 1),
+					metadata,
+					&timer,
+				)
 				timer.stop()
 				assert.Equal(t, 1, callbacks)
 				assert.Equal(t, scenario.terminal, observed.State)
@@ -157,7 +164,7 @@ func retryRaceFixture(t *testing.T, limit int) *Runner[int] {
 	t.Helper()
 	queue, err := workq.New[int](8)
 	require.NoError(t, err)
-	runner := newRunnerState(queue, limit, func() {})
+	runner := newRunnerState(queue, limit, 1, func() {})
 	// Hold coordinator ownership while the test drives the worker's private pipeline.
 	require.True(t, runner.registerSubmission())
 	t.Cleanup(func() {
@@ -206,8 +213,14 @@ func TestAbortBeforeMixedRetryResponse(t *testing.T) {
 		finished := make(chan struct{})
 		go func() {
 			var timer retryTimer
-			runner.processHeldBatch(0, []int{1, 2, 3, 4, 5, 6},
-				make([]ItemOutcome, 6), metadata, &timer)
+			runner.processHeldBatch(
+				0,
+				&runner.accounting.workerOutcomes[0],
+				[]int{1, 2, 3, 4, 5, 6},
+				make([]ItemOutcome, 6),
+				metadata,
+				&timer,
+			)
 			timer.stop()
 			close(finished)
 		}()
@@ -278,8 +291,14 @@ func TestAbortDuringClassificationPreservesEveryFailure(t *testing.T) {
 				return nil
 			}
 			var timer retryTimer
-			runner.processHeldBatch(0, []int{1, 2, 3, 4}, make([]ItemOutcome, 4),
-				make([]retryItem, 4), &timer)
+			runner.processHeldBatch(
+				0,
+				&runner.accounting.workerOutcomes[0],
+				[]int{1, 2, 3, 4},
+				make([]ItemOutcome, 4),
+				make([]retryItem, 4),
+				&timer,
+			)
 			timer.stop()
 			expectedState := TerminalAbandoned
 			failures := 0
@@ -332,8 +351,14 @@ func TestRequiredAbortPublishesBeforeNextPolicy(t *testing.T) {
 		finished := make(chan struct{})
 		go func() {
 			var timer retryTimer
-			runner.processHeldBatch(0, []int{1, 2}, make([]ItemOutcome, 2),
-				make([]retryItem, 2), &timer)
+			runner.processHeldBatch(
+				0,
+				&runner.accounting.workerOutcomes[0],
+				[]int{1, 2},
+				make([]ItemOutcome, 2),
+				make([]retryItem, 2),
+				&timer,
+			)
 			timer.stop()
 			close(finished)
 		}()
@@ -382,8 +407,14 @@ func TestCallbackAbortAbandonsOnlyRetryCandidates(t *testing.T) {
 			return nil
 		}
 		var timer retryTimer
-		runner.processHeldBatch(0, []int{1, 2, 3, 4}, make([]ItemOutcome, 4),
-			make([]retryItem, 4), &timer)
+		runner.processHeldBatch(
+			0,
+			&runner.accounting.workerOutcomes[0],
+			[]int{1, 2, 3, 4},
+			make([]ItemOutcome, 4),
+			make([]retryItem, 4),
+			&timer,
+		)
 		timer.stop()
 		assert.Equal(t, map[int]ItemOutcome{
 			1: {State: TerminalSucceeded, Attempts: 1},
@@ -430,7 +461,14 @@ func TestMalformedRetryResponseNeverCallsPolicy(t *testing.T) {
 			return nil
 		}
 		var timer retryTimer
-		runner.processHeldBatch(0, []int{1, 2}, make([]ItemOutcome, 2), make([]retryItem, 2), &timer)
+		runner.processHeldBatch(
+			0,
+			&runner.accounting.workerOutcomes[0],
+			[]int{1, 2},
+			make([]ItemOutcome, 2),
+			make([]retryItem, 2),
+			&timer,
+		)
 		timer.stop()
 		assert.Equal(t, 2, callbacks)
 		summary := runner.Summary()
@@ -451,102 +489,115 @@ func assertChannelClosed(t *testing.T, channel <-chan struct{}) {
 
 func TestRetryCompactionReleasesReferencesAndLatestErrors(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		for _, abort := range []bool{false, true} {
-			queue, err := workq.New[*retainedPayload](4)
-			require.NoError(t, err)
-			runner := newRunnerState(queue, 4, func() {})
-			require.True(t, runner.registerSubmission())
-			defer func() {
-				runner.unregisterSubmission()
-				runner.StopAdmission()
-				_ = runner.Wait()
-			}()
-			runner.config.FailureMode = Continue
-			first := errors.New("obsolete error")
-			latest := errors.New("latest error")
-			batch := []*retainedPayload{{value: 1}, {value: 2}, {value: 3}, {value: 4}}
-			outcomes := make([]ItemOutcome, 4)
-			metadata := make([]retryItem, 4)
-			var timer retryTimer
-			var invocations atomic.Int32
-			runner.config.Handler = func(_ context.Context, due []*retainedPayload) []Result {
-				switch invocations.Add(1) {
-				case 1:
-					return []Result{{}, {State: ResultFailed, Err: first}, {},
-						{State: ResultFailed, Err: first}}
-				case 2:
-					assert.Equal(t, []*retainedPayload{{value: 2}}, due)
-					assert.Equal(t, []*retainedPayload{nil, nil}, batch[2:])
-					assert.Equal(t, []retryItem{{}, {}}, metadata[2:])
-					assert.Equal(t, make([]ItemOutcome, 4), outcomes)
-					return []Result{{State: ResultFailed, Err: latest}}
-				default:
-					for position, item := range due {
-						expected := first
-						if item.value == 2 {
-							expected = latest
+		for _, callbacks := range []bool{false, true} {
+			for _, abort := range []bool{false, true} {
+				queue, err := workq.New[*retainedPayload](4)
+				require.NoError(t, err)
+				runner := newRunnerState(queue, 4, 1, func() {})
+				require.True(t, runner.registerSubmission())
+				defer func() {
+					runner.unregisterSubmission()
+					runner.StopAdmission()
+					_ = runner.Wait()
+				}()
+				runner.config.FailureMode = Continue
+				first := errors.New("obsolete error")
+				latest := errors.New("latest error")
+				batch := []*retainedPayload{{value: 1}, {value: 2}, {value: 3}, {value: 4}}
+				outcomes := make([]ItemOutcome, 4)
+				metadata := make([]retryItem, 4)
+				var timer retryTimer
+				var invocations atomic.Int32
+				runner.config.Handler = func(_ context.Context, due []*retainedPayload) []Result {
+					switch invocations.Add(1) {
+					case 1:
+						return []Result{{}, {State: ResultFailed, Err: first}, {},
+							{State: ResultFailed, Err: first}}
+					case 2:
+						assert.Equal(t, []*retainedPayload{{value: 2}}, due)
+						assert.Equal(t, []*retainedPayload{nil, nil}, batch[2:])
+						assert.Equal(t, []retryItem{{}, {}}, metadata[2:])
+						assert.Equal(t, make([]ItemOutcome, 4), outcomes)
+						return []Result{{State: ResultFailed, Err: latest}}
+					default:
+						for position, item := range due {
+							expected := first
+							if item.value == 2 {
+								expected = latest
+							}
+							assert.Same(t, expected, metadata[position].lastErr)
 						}
-						assert.Same(t, expected, metadata[position].lastErr)
+						return nil
 					}
-					return nil
 				}
-			}
-			policyCalls := 0
-			runner.config.Retry = &RetryPolicy{MaxAttempts: 3,
-				Delay: func(_ int, _ error) (time.Duration, bool) {
-					policyCalls++
-					if policyCalls == 1 {
-						return time.Second, true
+				policyCalls := 0
+				runner.config.Retry = &RetryPolicy{MaxAttempts: 3,
+					Delay: func(_ int, _ error) (time.Duration, bool) {
+						policyCalls++
+						if policyCalls == 1 {
+							return time.Second, true
+						}
+						return time.Hour, true
+					},
+				}
+				observed := make(map[int]ItemOutcome)
+				if callbacks {
+					runner.config.OnTerminal = func(item *retainedPayload, outcome ItemOutcome) error {
+						observed[item.value] = outcome
+						return nil
 					}
-					return time.Hour, true
-				},
-			}
-			observed := make(map[int]ItemOutcome)
-			runner.config.OnTerminal = func(item *retainedPayload, outcome ItemOutcome) error {
-				observed[item.value] = outcome
-				return nil
-			}
-			finished := make(chan struct{})
-			defer func() {
-				runner.Abort(nil)
+				}
+				finished := make(chan struct{})
+				defer func() {
+					runner.Abort(nil)
+					<-finished
+					timer.stop()
+				}()
+				go func() {
+					runner.processHeldBatch(
+						0,
+						&runner.accounting.workerOutcomes[0],
+						batch,
+						outcomes,
+						metadata,
+						&timer,
+					)
+					close(finished)
+				}()
+				synctest.Wait()
+				require.Equal(t, int32(1), invocations.Load())
+				require.NotNil(t, timer.timer)
+				time.Sleep(time.Second)
+				synctest.Wait()
+				require.Equal(t, int32(2), invocations.Load())
+				if abort {
+					runner.Abort(nil)
+				} else {
+					time.Sleep(time.Hour)
+				}
 				<-finished
-				timer.stop()
-			}()
-			go func() {
-				runner.processHeldBatch(0, batch, outcomes, metadata, &timer)
-				close(finished)
-			}()
-			synctest.Wait()
-			require.Equal(t, int32(1), invocations.Load())
-			require.NotNil(t, timer.timer)
-			time.Sleep(time.Second)
-			synctest.Wait()
-			require.Equal(t, int32(2), invocations.Load())
-			if abort {
-				runner.Abort(nil)
-			} else {
-				time.Sleep(time.Hour)
+				if callbacks {
+					assert.Equal(t, ItemOutcome{State: TerminalSucceeded, Attempts: 1}, observed[1])
+					assert.Equal(t, ItemOutcome{State: TerminalSucceeded, Attempts: 1}, observed[3])
+					if abort {
+						assert.Equal(t, ItemOutcome{
+							State: TerminalAbandoned, Attempts: 2, Err: latest,
+						}, observed[2])
+						assert.Equal(t, ItemOutcome{
+							State: TerminalAbandoned, Attempts: 1, Err: first,
+						}, observed[4])
+					} else {
+						assert.Equal(t, ItemOutcome{State: TerminalSucceeded, Attempts: 3}, observed[2])
+						assert.Equal(t, ItemOutcome{State: TerminalSucceeded, Attempts: 2}, observed[4])
+					}
+				}
+				assert.Equal(t, make([]*retainedPayload, 4), batch)
+				assert.Equal(t, make([]ItemOutcome, 4), outcomes)
+				assert.Equal(t, make([]retryItem, 4), metadata)
+				assert.False(t, timer.timer.Stop(), "timer remained active after cancellation")
+				assert.Empty(t, runner.Summary().Failures)
+				assert.Zero(t, runner.Summary().OmittedFailures)
 			}
-			<-finished
-			assert.Equal(t, ItemOutcome{State: TerminalSucceeded, Attempts: 1}, observed[1])
-			assert.Equal(t, ItemOutcome{State: TerminalSucceeded, Attempts: 1}, observed[3])
-			if abort {
-				assert.Equal(t, ItemOutcome{
-					State: TerminalAbandoned, Attempts: 2, Err: latest,
-				}, observed[2])
-				assert.Equal(t, ItemOutcome{
-					State: TerminalAbandoned, Attempts: 1, Err: first,
-				}, observed[4])
-			} else {
-				assert.Equal(t, ItemOutcome{State: TerminalSucceeded, Attempts: 3}, observed[2])
-				assert.Equal(t, ItemOutcome{State: TerminalSucceeded, Attempts: 2}, observed[4])
-			}
-			assert.Equal(t, make([]*retainedPayload, 4), batch)
-			assert.Equal(t, make([]ItemOutcome, 4), outcomes)
-			assert.Equal(t, make([]retryItem, 4), metadata)
-			assert.False(t, timer.timer.Stop(), "timer remained active after cancellation")
-			assert.Empty(t, runner.Summary().Failures)
-			assert.Zero(t, runner.Summary().OmittedFailures)
 		}
 	})
 }
@@ -779,6 +830,95 @@ func TestPeerAbortStillClassifiesOrdinaryFailure(t *testing.T) {
 			assert.Same(t, primary, summary.Failures[0].Err)
 			assert.Equal(t, omitted, summary.OmittedFailures)
 			assert.Same(t, primary, summary.AbortCause)
+		})
+	}
+}
+
+func TestNextCallbackWaitsForCommittedAbort(t *testing.T) {
+	for _, scenario := range []string{"peer abort", "callback error"} {
+		t.Run(scenario, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				runner := retryRaceFixture(t, 4)
+				firstEntered := make(chan struct{})
+				firstRelease := make(chan struct{})
+				secondEntered := make(chan struct{})
+				cancelEntered := make(chan struct{})
+				cancelRelease := make(chan struct{})
+				processed := make(chan struct{})
+				var owners sync.WaitGroup
+				defer func() {
+					releaseTestBarrier(firstRelease)
+					releaseTestBarrier(cancelRelease)
+					owners.Wait()
+				}()
+				cancel := runner.cancel
+				var firstCancel atomic.Bool
+				runner.cancel = func() {
+					if firstCancel.CompareAndSwap(false, true) {
+						close(cancelEntered)
+						<-cancelRelease
+					}
+					cancel()
+				}
+				cause := errors.New("abort before second callback")
+				var handlerCtx context.Context
+				runner.config.Handler = func(ctx context.Context, batch []int) []Result {
+					handlerCtx = ctx
+					assert.Equal(t, []int{1, 2}, batch)
+					return []Result{{State: ResultSucceeded}, {State: ResultSucceeded}}
+				}
+				var callbacks []int
+				runner.config.OnTerminal = func(item int, outcome ItemOutcome) error {
+					callbacks = append(callbacks, item)
+					assert.Equal(t, TerminalSucceeded, outcome.State)
+					if item == 1 {
+						close(firstEntered)
+						<-firstRelease
+						if scenario == "callback error" {
+							return cause
+						}
+						return nil
+					}
+					close(secondEntered)
+					assertChannelClosed(t, runner.Aborting())
+					assert.ErrorIs(t, handlerCtx.Err(), context.Canceled)
+					return nil
+				}
+				owners.Go(func() {
+					runner.processBatch(0, []int{1, 2}, make([]ItemOutcome, 2))
+					close(processed)
+				})
+				<-firstEntered
+				if scenario == "peer abort" {
+					owners.Go(func() { runner.Abort(cause) })
+					<-cancelEntered
+				}
+				close(firstRelease)
+				if scenario == "callback error" {
+					<-cancelEntered
+				}
+				synctest.Wait()
+				assert.Same(t, cause, runner.AbortCause())
+				assert.NoError(t, handlerCtx.Err())
+				assertChannelOpen(t, handlerCtx.Done())
+				assertChannelOpen(t, runner.Aborting())
+				assertChannelOpen(t, runner.Done())
+				assertChannelOpen(t, secondEntered)
+				assertChannelOpen(t, processed)
+				close(cancelRelease)
+				owners.Wait()
+				assertChannelClosed(t, secondEntered)
+				assert.Equal(t, []int{1, 2}, callbacks)
+				assert.Equal(t, uint64(2), runner.Summary().Succeeded)
+				if scenario == "callback error" {
+					require.Len(t, runner.Summary().Failures, 1)
+					assert.Equal(t, FailureRecord{
+						Boundary: BoundaryTerminalCallback, Worker: 0, Err: cause,
+					}, runner.Summary().Failures[0])
+				} else {
+					assert.Empty(t, runner.Summary().Failures)
+				}
+			})
 		})
 	}
 }

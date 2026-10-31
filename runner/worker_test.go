@@ -399,7 +399,7 @@ func TestAbortJoinsBlockedHandlersAndCleansQueue(t *testing.T) {
 func TestAcquiredValuesSkipHandlerAfterAbort(t *testing.T) {
 	queue, err := workq.New[int](2, workq.WithSingleConsumer())
 	require.NoError(t, err)
-	runner := newRunnerState(queue, 16, nil)
+	runner := newRunnerState(queue, 16, 1, nil)
 	runner.config = runtimeConfig(1)
 	runner.batchLimit = 2
 	runner.lifecycle.finish = runner.finishWorkers
@@ -431,7 +431,7 @@ func TestWorkerFinishWaitsForAbortPublicationBeforeCleanup(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		queue, err := workq.New[int](2, workq.WithSingleConsumer())
 		require.NoError(t, err)
-		runner := newRunnerState(queue, 16, func() {})
+		runner := newRunnerState(queue, 16, 1, func() {})
 		runner.config = runtimeConfig(1)
 		runner.batchLimit = 2
 		callbackEntered := make(chan struct{}, 1)

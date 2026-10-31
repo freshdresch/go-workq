@@ -36,13 +36,13 @@ func (r *Runner[T]) abort(cause error) {
 		r.lifecycle.mu.Unlock()
 		return
 	}
-	if r.lifecycle.abortCause != nil {
+	if r.lifecycle.abortRecord.Load() != nil {
 		published := r.lifecycle.aborting
 		r.lifecycle.mu.Unlock()
 		<-published
 		return
 	}
-	r.lifecycle.abortCause = cause
+	r.lifecycle.abortRecord.Store(&abortRecord{cause: cause})
 	r.closeAdmissionLocked()
 	r.startCoordinatorLocked()
 	r.lifecycle.mu.Unlock()
@@ -53,12 +53,8 @@ func (r *Runner[T]) abort(cause error) {
 }
 
 func (r *Runner[T]) awaitAbortPublication() {
-	r.lifecycle.mu.Lock()
-	pending := r.lifecycle.abortCause != nil
-	published := r.lifecycle.aborting
-	r.lifecycle.mu.Unlock()
-	if pending {
-		<-published
+	if r.lifecycle.abortRecord.Load() != nil {
+		<-r.lifecycle.aborting
 	}
 }
 
@@ -66,10 +62,7 @@ func (r *Runner[T]) coordinate() {
 	r.awaitAbortPublication()
 	<-r.lifecycle.admissionsDone
 	r.awaitAbortPublication()
-	r.lifecycle.mu.Lock()
-	aborted := r.lifecycle.abortCause != nil
-	r.lifecycle.mu.Unlock()
-	if aborted {
+	if r.lifecycle.abortRecord.Load() != nil {
 		<-r.lifecycle.aborting
 	} else {
 		r.queue.Close()
@@ -85,7 +78,7 @@ func (r *Runner[T]) publishCompletion() {
 	for {
 		r.awaitAbortPublication()
 		r.lifecycle.mu.Lock()
-		if r.lifecycle.abortCause != nil {
+		if r.lifecycle.abortRecord.Load() != nil {
 			select {
 			case <-r.lifecycle.aborting:
 			default:
@@ -93,7 +86,7 @@ func (r *Runner[T]) publishCompletion() {
 				continue
 			}
 		}
-		summary.AbortCause = r.lifecycle.abortCause
+		summary.AbortCause = r.AbortCause()
 		r.lifecycle.finalErr = aggregateFailures(summary)
 		r.lifecycle.completed = true
 		close(r.lifecycle.done)
@@ -134,9 +127,10 @@ func (r *Runner[T]) Aborting() <-chan struct{} {
 
 // AbortCause returns the first committed cause, possibly before abort publication finishes.
 func (r *Runner[T]) AbortCause() error {
-	r.lifecycle.mu.Lock()
-	defer r.lifecycle.mu.Unlock()
-	return r.lifecycle.abortCause
+	if record := r.lifecycle.abortRecord.Load(); record != nil {
+		return record.cause
+	}
+	return nil
 }
 
 // Wait joins all submissions, workers and cleanup. It does not stop an open runner.

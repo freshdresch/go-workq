@@ -9,6 +9,7 @@ import (
 )
 
 func (r *Runner[T]) runWorker(index int, endpoint workq.DiagnosticsEndpoint[T]) {
+	group := &r.accounting.workerOutcomes[index]
 	buffer := make([]T, r.batchLimit)
 	outcomes := make([]ItemOutcome, r.batchLimit)
 	metadata := make([]retryItem, r.batchLimit)
@@ -23,7 +24,7 @@ func (r *Runner[T]) runWorker(index int, endpoint workq.DiagnosticsEndpoint[T]) 
 		}
 		count, err := endpoint.Receive(r.ctx, buffer)
 		if count != 0 {
-			r.processHeldBatch(index, buffer[:count], outcomes[:count], metadata[:count], &timer)
+			r.processHeldBatch(index, group, buffer[:count], outcomes[:count], metadata[:count], &timer)
 		}
 		if err != nil {
 			r.handleReceiveError(index, err)
@@ -48,18 +49,32 @@ func (r *Runner[T]) processBatch(index int, batch []T, outcomes []ItemOutcome) {
 	var timer retryTimer
 	defer timer.stop()
 	defer clear(metadata)
-	r.processHeldBatch(index, batch, outcomes, metadata, &timer)
+	r.processHeldBatch(index, &r.accounting.workerOutcomes[index], batch, outcomes, metadata, &timer)
 }
 
-func (r *Runner[T]) finalizeBatch(index int, batch []T, outcomes []ItemOutcome) {
-	r.awaitAbortPublication()
+func (r *Runner[T]) finalizeBatch(
+	index int,
+	group *outcomeCounters,
+	batch []T,
+	outcomes []ItemOutcome,
+) {
+	if r.config.OnTerminal == nil {
+		r.awaitAbortPublication()
+		var delta outcomeDelta
+		for _, outcome := range outcomes {
+			delta.add(outcomeToDelta(outcome))
+		}
+		clear(batch)
+		clear(outcomes)
+		group.publish(delta)
+		return
+	}
 	for position, item := range batch {
 		outcome := outcomes[position]
-		r.accounting.recordOutcome(outcome)
-		if r.config.OnTerminal != nil {
-			if err := r.config.OnTerminal(item, outcome); err != nil {
-				r.recordFailureAndAbort(BoundaryTerminalCallback, index, err)
-			}
+		r.awaitAbortPublication()
+		group.publish(outcomeToDelta(outcome))
+		if err := r.config.OnTerminal(item, outcome); err != nil {
+			r.recordFailureAndAbort(BoundaryTerminalCallback, index, err)
 		}
 		var zero T
 		batch[position] = zero
@@ -95,7 +110,7 @@ func (r *Runner[T]) cleanupQueued() {
 		for position := range count {
 			outcomes[position] = ItemOutcome{State: TerminalAbandoned, Err: r.AbortCause()}
 		}
-		r.finalizeBatch(-1, buffer[:count], outcomes[:count])
+		r.finalizeBatch(-1, &r.accounting.cleanupOutcomes, buffer[:count], outcomes[:count])
 		if errors.Is(err, workq.ErrClosed) {
 			return
 		}

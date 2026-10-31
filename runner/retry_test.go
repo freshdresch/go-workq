@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -288,4 +289,207 @@ func TestAbortDuringRetryDelayReleasesSubmitters(t *testing.T) {
 			Accepted: 2, Abandoned: 2, Attempts: 1, AbortCause: ErrAborted,
 		}, runner.Summary())
 	})
+}
+
+func TestFinalizationPathsAgree(t *testing.T) {
+	failure := errors.New("ordinary failure")
+	for _, scenario := range []struct {
+		name      string
+		succeeded uint64
+		failed    uint64
+		abandoned uint64
+		attempts  uint64
+	}{
+		{name: "nil success", succeeded: 3, attempts: 3},
+		{name: "explicit success", succeeded: 3, attempts: 3},
+		{name: "mixed failure", succeeded: 2, failed: 1, attempts: 3},
+		{name: "invalid response", failed: 3, attempts: 3},
+		{name: "abort before processing", abandoned: 3},
+		{name: "abort before response", succeeded: 1, abandoned: 2, attempts: 2},
+		{name: "abort during classification", succeeded: 1, failed: 1, abandoned: 1, attempts: 3},
+		{name: "queued cleanup", abandoned: 3},
+		{name: "different retry deadlines", succeeded: 3, attempts: 5},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var baseline Summary
+			for _, callbacks := range []bool{false, true} {
+				synctest.Test(t, func(t *testing.T) {
+					runner := retryRaceFixture(t, 8)
+					runner.config.FailureMode = Continue
+					runner.accounting.recordAccepted(3)
+					var observed []int
+					if callbacks {
+						runner.config.OnTerminal = func(item int, _ ItemOutcome) error {
+							observed = append(observed, item)
+							return nil
+						}
+					}
+					calls := 0
+					runner.config.Handler = func(ctx context.Context, _ []int) []Result {
+						calls++
+						switch scenario.name {
+						case "explicit success":
+							return []Result{{}, {}, {}}
+						case "mixed failure":
+							return []Result{{}, {State: ResultFailed, Err: failure}, {}}
+						case "invalid response":
+							return []Result{{}}
+						case "abort before response":
+							runner.Abort(nil)
+							return []Result{{}, PeerCanceled(ctx), {State: ResultUnattempted}}
+						case "abort during classification":
+							return []Result{{}, {State: ResultFailed, Err: failure},
+								{State: ResultFailed, Err: failure}}
+						case "different retry deadlines":
+							if calls == 1 {
+								return []Result{{}, {State: ResultFailed, Err: failure},
+									{State: ResultFailed, Err: failure}}
+							}
+						}
+						return nil
+					}
+					policyCalls := 0
+					runner.config.Retry = &RetryPolicy{MaxAttempts: 2,
+						Delay: func(int, error) (time.Duration, bool) {
+							policyCalls++
+							if scenario.name == "abort during classification" {
+								runner.Abort(nil)
+								return time.Hour, policyCalls != 1
+							}
+							return time.Duration(policyCalls) * time.Second,
+								scenario.name == "different retry deadlines"
+						},
+					}
+					batch := []int{1, 2, 3}
+					if scenario.name == "abort before processing" {
+						runner.Abort(nil)
+					}
+					if scenario.name == "queued cleanup" {
+						count, err := runner.queue.PushBatch(context.Background(), batch)
+						require.NoError(t, err)
+						require.Equal(t, 3, count)
+						runner.queue.Close()
+						runner.Abort(nil)
+						runner.batchLimit = 2
+						runner.cleanupQueued()
+					} else {
+						runner.processBatch(0, batch, make([]ItemOutcome, 3))
+						assert.Equal(t, []int{0, 0, 0}, batch)
+					}
+					summary := runner.Summary()
+					assert.Equal(t, uint64(3), summary.Accepted)
+					assert.Equal(t, scenario.succeeded, summary.Succeeded)
+					assert.Equal(t, scenario.failed, summary.Failed)
+					assert.Equal(t, scenario.abandoned, summary.Abandoned)
+					assert.Equal(t, scenario.attempts, summary.Attempts)
+					assert.Equal(t, summary.Accepted,
+						summary.Succeeded+summary.Failed+summary.Abandoned)
+					if callbacks {
+						assert.Equal(t, baseline, summary)
+						assert.ElementsMatch(t, []int{1, 2, 3}, observed)
+					} else {
+						baseline = summary
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestTerminalDeltasPublishedBeforeRetryWait(t *testing.T) {
+	for _, callbacks := range []bool{false, true} {
+		for _, abort := range []bool{false, true} {
+			synctest.Test(t, func(t *testing.T) {
+				runner := retryRaceFixture(t, 4)
+				runner.config.FailureMode = Continue
+				runner.accounting.recordAccepted(4)
+				failure := errors.New("retry failure")
+				permanent := errors.New("permanent failure")
+				batch := []int{1, 2, 3, 4}
+				outcomes := make([]ItemOutcome, 4)
+				metadata := make([]retryItem, 4)
+				var calls atomic.Int32
+				runner.config.Handler = func(_ context.Context, due []int) []Result {
+					invocation := calls.Add(1)
+					if invocation == 1 {
+						return []Result{{}, {State: ResultFailed, Err: permanent},
+							{State: ResultFailed, Err: failure}, {State: ResultFailed, Err: failure}}
+					}
+					if invocation == 2 {
+						assert.Equal(t, []int{3}, due)
+						assert.Equal(t, []int{3, 4, 0, 0}, batch)
+						assert.Equal(t, 1, metadata[0].attempts)
+						assert.Equal(t, 1, metadata[1].attempts)
+						assert.Equal(t, []retryItem{{}, {}}, metadata[2:])
+						assert.Equal(t, make([]ItemOutcome, 4), outcomes)
+						return []Result{{State: ResultFailed, Err: failure}}
+					}
+					if invocation == 3 {
+						assert.ElementsMatch(t, []int{3, 4}, batch[:2])
+						for position, item := range batch[:2] {
+							assert.Equal(t, map[int]int{3: 2, 4: 1}[item], metadata[position].attempts)
+						}
+						assert.Equal(t, []retryItem{{}, {}}, metadata[2:])
+						assert.Equal(t, make([]ItemOutcome, 4), outcomes)
+					}
+					return nil
+				}
+				policyCalls := 0
+				runner.config.Retry = &RetryPolicy{MaxAttempts: 3,
+					Delay: func(_ int, err error) (time.Duration, bool) {
+						if errors.Is(err, permanent) {
+							return 0, false
+						}
+						policyCalls++
+						if policyCalls == 1 {
+							return time.Second, true
+						}
+						return time.Hour, true
+					},
+				}
+				if callbacks {
+					runner.config.OnTerminal = func(int, ItemOutcome) error { return nil }
+				}
+				var timer retryTimer
+				finished := make(chan struct{})
+				defer func() {
+					runner.Abort(nil)
+					<-finished
+					timer.stop()
+				}()
+				go func() {
+					runner.processHeldBatch(0, &runner.accounting.workerOutcomes[0],
+						batch, outcomes, metadata, &timer)
+					close(finished)
+				}()
+				synctest.Wait()
+				assert.Equal(t, int32(1), calls.Load())
+				assert.Equal(t, Summary{Accepted: 4, Succeeded: 1, Failed: 1, Attempts: 2,
+					Failures: []FailureRecord{{Boundary: BoundaryHandler, Worker: 0, Err: permanent}}},
+					runner.Summary())
+				time.Sleep(time.Second)
+				synctest.Wait()
+				assert.Equal(t, int32(2), calls.Load())
+				assert.Equal(t, uint64(2), runner.Summary().Attempts)
+				if abort {
+					runner.Abort(nil)
+				} else {
+					time.Sleep(2 * time.Hour)
+				}
+				<-finished
+				summary := runner.Summary()
+				if abort {
+					assert.Equal(t, uint64(5), summary.Attempts)
+					assert.Equal(t, uint64(2), summary.Abandoned)
+				} else {
+					assert.Equal(t, uint64(7), summary.Attempts)
+					assert.Equal(t, uint64(3), summary.Succeeded)
+				}
+				assert.Equal(t, summary.Accepted, summary.Succeeded+summary.Failed+summary.Abandoned)
+				assert.Equal(t, []int{0, 0, 0, 0}, batch)
+				assert.Equal(t, make([]ItemOutcome, 4), outcomes)
+				assert.Equal(t, make([]retryItem, 4), metadata)
+			})
+		}
+	}
 }
