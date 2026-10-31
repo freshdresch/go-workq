@@ -3,6 +3,9 @@
 workq is an in-process work queue. Any number of producers add items, and any number of
 consumers acquire them. Each acquired item goes to one consumer.
 
+Use the [companion runner](runner/README.md) to own workers, optional retries, submission admission,
+and terminal cleanup through graceful shutdown or abort.
+
 See the [observability recipes](observability.md) for application-owned progress counts,
 latency measurements, and live collection. See the [overload recipes](overload.md) to choose
 between waiting, rejection, discard, and a submission wait budget.

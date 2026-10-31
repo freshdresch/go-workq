@@ -1,0 +1,46 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "runner",
+    srcs = [
+        "adapters.go",
+        "config.go",
+        "doc.go",
+        "lifecycle.go",
+        "result.go",
+        "retry.go",
+        "runner.go",
+        "summary.go",
+        "worker.go",
+    ],
+    importpath = "github.com/freshdresch/go-data-structures/workq/runner",
+    visibility = ["//visibility:public"],
+    deps = ["//workq"],
+)
+
+go_test(
+    name = "runner_test",
+    srcs = [
+        "adapters_test.go",
+        "admission_test.go",
+        "cleanup_test.go",
+        "composition_test.go",
+        "config_test.go",
+        "diagnostics_test.go",
+        "example_test.go",
+        "lifecycle_test.go",
+        "result_test.go",
+        "retry_test.go",
+        "retry_race_test.go",
+        "retention_test.go",
+        "summary_test.go",
+        "worker_test.go",
+    ],
+    embed = [":runner"],
+    deps = [
+        "//ring",
+        "//workq",
+        "@com_github_stretchr_testify//assert:assert",
+        "@com_github_stretchr_testify//require:require",
+    ],
+)
