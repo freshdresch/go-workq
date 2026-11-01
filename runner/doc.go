@@ -1,5 +1,6 @@
 // Package runner owns a bounded workq queue, workers, retries and terminal cleanup for one run.
-// New starts a single-use runner. Its owner must eventually call Shutdown, or Abort then Wait.
+// New starts a single-use runner. Its owner must eventually call Shutdown, StopAdmission then
+// Wait, or Abort then Wait.
 // A runner cannot restart and must not be copied. Concurrent submission and lifecycle calls
 // are supported.
 //

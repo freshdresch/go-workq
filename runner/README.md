@@ -2,8 +2,8 @@
 
 `runner` owns a bounded `workq` queue, a fixed worker group, submission admission, optional retries,
 and terminal cleanup. `New` starts a single-use runner after validating its configuration.
-The owner must call `Shutdown`, or `Abort` followed by `Wait`. Construct a new runner for another
-run.
+The owner must call `Shutdown`, `StopAdmission` followed by `Wait`, or `Abort` followed by `Wait`.
+Construct a new runner for another run.
 
 See [executable examples](example_test.go) for a finite job, service shutdown, external abort,
 native partial results, retries, resource release, and two-stage supervision.

@@ -478,3 +478,62 @@ func TestSubmissionContextInspectionOrder(t *testing.T) {
 	require.NoError(t, runner.Wait())
 	assert.Equal(t, []int{1}, *received)
 }
+
+func TestPartialSubmissionCancellationRunsTerminalCallbacks(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		config := runtimeConfig(1)
+		config.Capacity = 2
+		config.Queue.MaxReceiveBatch = 1
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		defer releaseTestBarrier(release)
+		config.Handler = func(ctx context.Context, batch []int) []Result {
+			if batch[0] == 10 {
+				close(entered)
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return []Result{PeerCanceled(ctx)}
+				}
+			}
+			return nil
+		}
+		outcomes := make(map[int][]ItemOutcome)
+		config.OnTerminal = func(item int, outcome ItemOutcome) error {
+			outcomes[item] = append(outcomes[item], outcome)
+			return nil
+		}
+		runner, err := New(config)
+		require.NoError(t, err)
+		joinRunnerOnCleanup(t, runner)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		items := []int{10, 11, 12, 13, 14}
+		results := make(chan submissionResult, 1)
+		go func() {
+			count, err := runner.SubmitBatch(ctx, items)
+			results <- submissionResult{count, err}
+		}()
+		<-entered
+		synctest.Wait()
+		cancel()
+		result := <-results
+		require.ErrorIs(t, result.err, context.Canceled)
+		require.Equal(t, 3, result.accepted)
+		assert.Equal(t, []int{13, 14}, items[result.accepted:])
+		close(release)
+		runner.StopAdmission()
+		require.NoError(t, runner.Wait())
+		assert.Equal(t, Summary{Accepted: 3, Succeeded: 3, Attempts: 3}, runner.Summary())
+		assert.Nil(t, runner.AbortCause())
+		require.Len(t, outcomes, result.accepted)
+		for _, item := range items[:result.accepted] {
+			assert.Equal(t, []ItemOutcome{{
+				State: TerminalSucceeded, Attempts: 1,
+			}}, outcomes[item])
+		}
+		for _, item := range items[result.accepted:] {
+			assert.Empty(t, outcomes[item])
+		}
+	})
+}

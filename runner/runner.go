@@ -23,7 +23,7 @@ type Runner[T any] struct {
 }
 
 // New validates config and starts a single-use runner. The caller must eventually join it
-// through Shutdown, or Abort followed by Wait.
+// through Shutdown, StopAdmission followed by Wait, or Abort followed by Wait.
 func New[T any](config Config[T]) (*Runner[T], error) {
 	resolved, err := resolveConfig(config)
 	if err != nil {

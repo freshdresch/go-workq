@@ -5,8 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"sync/atomic"
+	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/freshdresch/go-data-structures/workq"
 	"github.com/freshdresch/go-data-structures/workq/runner"
 )
 
@@ -197,6 +203,28 @@ func supervisePair(first, second *runner.Runner[int]) {
 	}
 }
 
+// forwardBatch treats downstream acceptance as upstream ownership transfer.
+func forwardBatch(ctx context.Context, second *runner.Runner[int], batch []int) []runner.Result {
+	accepted, forwardErr := second.SubmitBatch(ctx, batch)
+	results := make([]runner.Result, len(batch))
+	// Accepted positions are successful ownership transfers in this application.
+	// The downstream stage alone determines their processing outcomes.
+	if forwardErr == nil {
+		return results
+	}
+	if cause := second.AbortCause(); cause != nil {
+		forwardErr = fmt.Errorf("stage 2: %w", cause)
+	}
+	for position := accepted; position < len(batch); position++ {
+		if ctx.Err() != nil {
+			results[position] = runner.PeerCanceled(ctx)
+			continue
+		}
+		results[position] = runner.Result{State: runner.ResultFailed, Err: forwardErr}
+	}
+	return results
+}
+
 func Example_pipeline() {
 	second, err := runner.New(runner.Config[int]{
 		Capacity: 4,
@@ -211,24 +239,7 @@ func Example_pipeline() {
 		Workers:  1,
 		// No upstream retry: replaying an entire batch could duplicate its forwarded prefix.
 		Handler: func(ctx context.Context, batch []int) []runner.Result {
-			accepted, forwardErr := second.SubmitBatch(ctx, batch)
-			results := make([]runner.Result, len(batch))
-			// Accepted positions are successful ownership transfers in this application.
-			// The downstream stage alone determines their processing outcomes.
-			if forwardErr == nil {
-				return results
-			}
-			if cause := second.AbortCause(); cause != nil {
-				forwardErr = fmt.Errorf("stage 2: %w", cause)
-			}
-			for position := accepted; position < len(batch); position++ {
-				if ctx.Err() != nil {
-					results[position] = runner.PeerCanceled(ctx)
-					continue
-				}
-				results[position] = runner.Result{State: runner.ResultFailed, Err: forwardErr}
-			}
-			return results
+			return forwardBatch(ctx, second, batch)
 		},
 	})
 	if err != nil {
@@ -255,4 +266,117 @@ func Example_pipeline() {
 	}
 	fmt.Println(accepted, first.Summary().Succeeded, second.Summary().Succeeded)
 	// Output: 3 3 3
+}
+
+func TestPipelinePartialForwardingCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		cause := errors.New("stop pipeline")
+		secondEntered := make(chan struct{})
+		secondOutcomes := make(map[int][]runner.ItemOutcome)
+		second, err := runner.New(runner.Config[int]{
+			Capacity: 1,
+			Workers:  1,
+			Queue: runner.QueueConfig{
+				ProducerWait: &workq.WaitStrategy{},
+				ConsumerWait: &workq.WaitStrategy{},
+			},
+			Handler: func(ctx context.Context, batch []int) []runner.Result {
+				if batch[0] == 1 {
+					return nil
+				}
+				close(secondEntered)
+				<-ctx.Done()
+				return []runner.Result{runner.PeerCanceled(ctx)}
+			},
+			OnTerminal: func(item int, outcome runner.ItemOutcome) error {
+				secondOutcomes[item] = append(secondOutcomes[item], outcome)
+				return nil
+			},
+		})
+		require.NoError(t, err)
+		defer func() {
+			second.Abort(cause)
+			_ = second.Wait()
+		}()
+		forward := make(chan struct{})
+		firstOutcomes := make(map[int][]runner.ItemOutcome)
+		first, err := runner.New(runner.Config[int]{
+			Capacity: 4,
+			Workers:  1,
+			Queue: runner.QueueConfig{
+				MaxReceiveBatch: 4,
+				ProducerWait:    &workq.WaitStrategy{},
+				ConsumerWait:    &workq.WaitStrategy{},
+			},
+			Handler: func(ctx context.Context, batch []int) []runner.Result {
+				select {
+				case <-forward:
+				case <-ctx.Done():
+				}
+				return forwardBatch(ctx, second, batch)
+			},
+			OnTerminal: func(item int, outcome runner.ItemOutcome) error {
+				firstOutcomes[item] = append(firstOutcomes[item], outcome)
+				return nil
+			},
+		})
+		require.NoError(t, err)
+		supervisorDone := make(chan struct{})
+		go func() {
+			defer close(supervisorDone)
+			supervisePair(first, second)
+		}()
+		defer func() {
+			// Release both stages before joining, including on an assertion failure.
+			first.Abort(cause)
+			second.Abort(cause)
+			_ = first.Wait()
+			_ = second.Wait()
+			<-supervisorDone
+		}()
+		items := []int{1, 2, 3, 4}
+		accepted, err := first.SubmitBatch(context.Background(), items)
+		require.NoError(t, err)
+		require.Equal(t, len(items), accepted)
+		close(forward)
+		<-secondEntered
+		synctest.Wait()
+		assert.Equal(t, uint64(1), second.Summary().Succeeded)
+		first.Abort(cause)
+		require.ErrorIs(t, first.Wait(), cause)
+		require.ErrorIs(t, second.Wait(), cause)
+		<-supervisorDone
+		assert.ErrorIs(t, second.AbortCause(), cause)
+		assert.Equal(t, runner.Summary{
+			Accepted: 4, Succeeded: 3, Abandoned: 1, Attempts: 4, AbortCause: cause,
+		}, first.Summary())
+		secondSummary := second.Summary()
+		assert.Equal(t, uint64(3), secondSummary.Accepted)
+		assert.Equal(t, uint64(1), secondSummary.Succeeded)
+		assert.Zero(t, secondSummary.Failed)
+		assert.Equal(t, uint64(2), secondSummary.Abandoned)
+		assert.Equal(t, uint64(2), secondSummary.Attempts)
+		assert.Empty(t, secondSummary.Failures)
+		require.Len(t, firstOutcomes, 4)
+		require.Len(t, secondOutcomes, 3)
+		for _, item := range items[:3] {
+			assert.Equal(t, []runner.ItemOutcome{{
+				State: runner.TerminalSucceeded, Attempts: 1,
+			}}, firstOutcomes[item])
+		}
+		require.Len(t, firstOutcomes[4], 1)
+		assert.Equal(t, runner.TerminalAbandoned, firstOutcomes[4][0].State)
+		assert.Equal(t, 1, firstOutcomes[4][0].Attempts)
+		assert.ErrorIs(t, firstOutcomes[4][0].Err, cause)
+		assert.Equal(t, []runner.ItemOutcome{{
+			State: runner.TerminalSucceeded, Attempts: 1,
+		}}, secondOutcomes[1])
+		for _, item := range []int{2, 3} {
+			require.Len(t, secondOutcomes[item], 1)
+			assert.Equal(t, runner.TerminalAbandoned, secondOutcomes[item][0].State)
+			assert.Equal(t, 3-item, secondOutcomes[item][0].Attempts)
+			assert.ErrorIs(t, secondOutcomes[item][0].Err, cause)
+		}
+		assert.Empty(t, secondOutcomes[4])
+	})
 }

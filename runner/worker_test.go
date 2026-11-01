@@ -35,6 +35,18 @@ func TestNewRejectsInvalidConfiguration(t *testing.T) {
 		"capacity": func(config *Config[int]) {
 			config.Capacity = 3
 		},
+		"negative push batch": func(config *Config[int]) {
+			config.Queue.MaxPushBatch = -1
+		},
+		"oversized push batch": func(config *Config[int]) {
+			config.Queue.MaxPushBatch = config.Capacity + 1
+		},
+		"negative receive batch": func(config *Config[int]) {
+			config.Queue.MaxReceiveBatch = -1
+		},
+		"oversized receive batch": func(config *Config[int]) {
+			config.Queue.MaxReceiveBatch = config.Capacity + 1
+		},
 		"queue wait": func(config *Config[int]) {
 			config.Queue.ConsumerWait = &workq.WaitStrategy{Spins: -1}
 		},
