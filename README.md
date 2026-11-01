@@ -17,6 +17,21 @@ For repeated operations, retain a `DiagnosticsEndpoint` to reuse one recording s
 [endpoint guide](diagnostics.md#retain-an-endpoint-for-repeated-operations) and the runnable
 [producer and consumer example](example_diagnostics_test.go).
 
+## Package layout
+
+`workq` owns queue construction, operations, waiting, and diagnostics endpoints.
+[`workq/diagnostics`](diagnostics/diagnostics.go) owns the public diagnostics configuration, enums,
+histograms, and snapshots. [`workq/wait`](wait/wait.go) owns the `Strategy` value. The existing
+`workq` diagnostics names, constants, and `WaitStrategy` remain compatible aliases and forwards.
+Wait defaults, validation, and loops remain in `workq`. Private storage, recording, and reduction
+live in `workq/internal/diagnostics`.
+
+Executable recipes and their supporting tests live in [`examples/lifecycle`](examples/lifecycle),
+[`examples/observability`](examples/observability), and [`examples/overload`](examples/overload).
+The core package retains concise diagnostics API examples. [`runner`](runner/README.md) owns its
+worker lifecycle and examples. Run every workq package from the repository root with `go test
+./workq/...`.
+
 ## Ownership and completion
 
 A successful push reports acceptance. Acquisition removes work from the queue before application
@@ -260,10 +275,10 @@ when the consumers stop. Running producers and consumers in one `errgroup` does 
 A pipeline chains queues. A stage's handler calls `PushBatch` on the next stage's queue with the
 `ctx` it receives, so the stage's handlers are the next stage's producers. Close the first queue
 after its outside producers return. Wait until every `Consume` on that queue has returned, for
-example with a `sync.WaitGroup`. Only then close the next queue. Closing every queue at once
-breaks the rule for every queue after the first. [`Example_pipeline`](example_test.go) shows
-this order. The [pipeline recipe](lifecycle.md#pipelines) covers failure attribution and partial
-forwarding.
+example with a `sync.WaitGroup`. Only then close the next queue. Closing every queue at once breaks
+the rule for every queue after the first. [`Example_pipeline`](examples/lifecycle/example_test.go)
+shows this order. The [pipeline recipe](lifecycle.md#pipelines) covers failure attribution and
+partial forwarding.
 
 ### Self-feeding queues
 
@@ -307,9 +322,9 @@ producers. The owner holds one count on that stage's behalf. It releases that co
 `Consume` on the upstream queue has returned.
 
 A handler that pushes into its own queue makes the consumers producers. A queue built with
-`WithSingleProducer` then has more than one producer, which breaks the declaration. Such a
-queue needs the default MPMC engine, or MPSC when it has one consumer.
-[`Example_selfFeeding`](example_test.go) shows the pattern.
+`WithSingleProducer` then has more than one producer, which breaks the declaration. Such a queue
+needs the default MPMC engine, or MPSC when it has one consumer.
+[`Example_selfFeeding`](examples/lifecycle/example_test.go) shows the pattern.
 
 ## When to use something else
 

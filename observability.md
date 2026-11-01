@@ -9,7 +9,7 @@ Metrics report progress. They do not decide when work may stop.
 ## Choose the measurements
 
 The executable examples and their private helpers live in
-[example_observability_test.go](example_observability_test.go).
+[example_observability_test.go](examples/observability/example_observability_test.go).
 
 | Recipe | Use it for | Added work |
 |---|---|---|
@@ -26,7 +26,7 @@ latency and keeps independent accepted, acquired, and completed totals.
 Run the examples and focused tests from the repository root:
 
 ```sh
-go test ./workq -run 'TestObservability|Example_observability' -count=1
+go test ./workq/examples/observability -run 'TestObservability|Example_observability' -count=1
 ```
 
 The examples print stable counts. Actual durations, rates, and bucket distributions depend on

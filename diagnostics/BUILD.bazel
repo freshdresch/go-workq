@@ -1,0 +1,9 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "diagnostics",
+    srcs = ["diagnostics.go"],
+    importpath = "github.com/freshdresch/go-data-structures/workq/diagnostics",
+    visibility = ["//visibility:public"],
+    deps = ["//workq/wait"],
+)

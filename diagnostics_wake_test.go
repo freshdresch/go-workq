@@ -18,8 +18,8 @@ func newDiagnosticsWakeQueue(
 	queue := newTestQueue(t, fake, WithMaxReceiveBatch(1), WithDiagnostics(DiagnosticsConfig{
 		Mode: DiagnosticsCounters, Shards: 2,
 	}))
-	origin := &diagnosticsRecording{counters: &queue.diagnostics.counters[0]}
-	recipient := &diagnosticsRecording{counters: &queue.diagnostics.counters[1]}
+	origin := &diagnosticsRecording{counters: &queue.diagnostics.Counters[0]}
+	recipient := &diagnosticsRecording{counters: &queue.diagnostics.Counters[1]}
 	return queue, fake, origin, recipient
 }
 
@@ -92,9 +92,9 @@ func TestDiagnosticsWakeGroupRetryAndEarlyExit(t *testing.T) {
 
 func testDiagnosticsWakeGroupRetryAndEarlyExit(t *testing.T, config DiagnosticsConfig) {
 	queue := newTestQueue(t, newScriptedEngine[int](8), WithDiagnostics(config))
-	recording := &diagnosticsRecording{counters: &queue.diagnostics.counters[0]}
+	recording := &diagnosticsRecording{counters: &queue.diagnostics.Counters[0]}
 	recipient := &diagnosticsRecording{
-		counters: &queue.diagnostics.counters[config.Shards-1],
+		counters: &queue.diagnostics.Counters[config.Shards-1],
 	}
 	side := &queue.consumers
 	callers := make([]*waiter, 6)
@@ -186,7 +186,7 @@ func TestDiagnosticsWakePublicationFloorAndSources(t *testing.T) {
 	assert.Equal(t, uint64(1), producer.ReusableSlots[CleanupProbe].Count)
 	assert.Equal(t, uint64(5), producer.ReusableSlots[CleanupProbe].Sum)
 	assert.Zero(t, producer.ReusableSlots[PublicationProbe].Count)
-	assert.Zero(t, queue.diagnostics.counters[1].consumer.capacity[CleanupProbe].count.Load())
+	assert.Zero(t, queue.diagnostics.Counters[1].Consumer.Capacity[CleanupProbe].Count.Load())
 	assertIdleQueue(t, queue)
 }
 
@@ -240,28 +240,28 @@ func TestDiagnosticsWakeEndpointTokenOwnership(t *testing.T) {
 						transfers++
 					}
 					require.NoError(t, <-result)
-					originCounters := &queue.diagnostics.counters[origin.shard].consumer.diagnosticsSideCounters
-					recipientShard := &queue.diagnostics.counters[recipient.shard]
-					recipientCounters := &recipientShard.consumer.diagnosticsSideCounters
+					originCounters := &queue.diagnostics.Counters[origin.shard].Consumer.SideCounters
+					recipientShard := &queue.diagnostics.Counters[recipient.shard]
+					recipientCounters := &recipientShard.Consumer.SideCounters
 					pushed, received := transfers, uint64(1)
 					if producer {
-						originCounters = &queue.diagnostics.counters[origin.shard].producer.diagnosticsSideCounters
-						recipientCounters = &recipientShard.producer.diagnosticsSideCounters
+						originCounters = &queue.diagnostics.Counters[origin.shard].Producer.SideCounters
+						recipientCounters = &recipientShard.Producer.SideCounters
 						pushed, received = 1, transfers
 					}
-					assert.Equal(t, transfers, originCounters.tokensSent.Load())
-					assert.Zero(t, recipientCounters.tokensSent.Load())
-					assert.Zero(t, originCounters.tokensReceivedForRetry.Load())
-					assert.Zero(t, originCounters.tokensDrainedByCleanup.Load())
+					assert.Equal(t, transfers, originCounters.TokensSent.Load())
+					assert.Zero(t, recipientCounters.TokensSent.Load())
+					assert.Zero(t, originCounters.TokensReceivedForRetry.Load())
+					assert.Zero(t, originCounters.TokensDrainedByCleanup.Load())
 					if cleanup {
-						assert.Equal(t, uint64(1), recipientCounters.tokensDrainedByCleanup.Load())
-						assert.Zero(t, recipientCounters.tokensReceivedForRetry.Load())
+						assert.Equal(t, uint64(1), recipientCounters.TokensDrainedByCleanup.Load())
+						assert.Zero(t, recipientCounters.TokensReceivedForRetry.Load())
 					} else {
-						assert.Equal(t, uint64(2), recipientCounters.tokensReceivedForRetry.Load())
-						assert.Equal(t, uint64(1), recipientCounters.wakeRetryEnds[RetryReparked].Load())
-						assert.Equal(t, uint64(1), recipientCounters.wakeRetryEnds[RetryProgress].Load())
+						assert.Equal(t, uint64(2), recipientCounters.TokensReceivedForRetry.Load())
+						assert.Equal(t, uint64(1), recipientCounters.WakeRetryEnds[RetryReparked].Load())
+						assert.Equal(t, uint64(1), recipientCounters.WakeRetryEnds[RetryProgress].Load())
 						if producer {
-							assert.Equal(t, uint64(1), recipientCounters.producerOldestReenlistments.Load())
+							assert.Equal(t, uint64(1), recipientCounters.ProducerOldestReenlistments.Load())
 						}
 					}
 					snapshot := queue.Diagnostics()
@@ -300,15 +300,15 @@ func TestDiagnosticsWakeEndpointConsumerGroup(t *testing.T) {
 		for range 3 {
 			require.NoError(t, <-results)
 		}
-		counters := &queue.diagnostics.counters[origin.shard].consumer
-		assert.Equal(t, uint64(3), counters.tokensSent.Load())
-		assert.Equal(t, uint64(1), counters.wakeTransfers[WakeGroup].Load())
-		assert.Zero(t, counters.tokensReceivedForRetry.Load())
+		counters := &queue.diagnostics.Counters[origin.shard].Consumer
+		assert.Equal(t, uint64(3), counters.TokensSent.Load())
+		assert.Equal(t, uint64(1), counters.WakeTransfers[WakeGroup].Load())
+		assert.Zero(t, counters.TokensReceivedForRetry.Load())
 		for index := 1; index < 4; index++ {
-			recipient := &queue.diagnostics.counters[index].consumer
-			assert.Equal(t, uint64(1), recipient.tokensReceivedForRetry.Load())
-			assert.Equal(t, uint64(1), recipient.wakeRetryEnds[RetryProgress].Load())
-			assert.Zero(t, recipient.tokensSent.Load())
+			recipient := &queue.diagnostics.Counters[index].Consumer
+			assert.Equal(t, uint64(1), recipient.TokensReceivedForRetry.Load())
+			assert.Equal(t, uint64(1), recipient.WakeRetryEnds[RetryProgress].Load())
+			assert.Zero(t, recipient.TokensSent.Load())
 		}
 		assertDiagnosticsConserved(t, queue.Diagnostics(), 3, 3)
 		assertIdleQueue(t, queue)

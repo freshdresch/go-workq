@@ -48,6 +48,10 @@
 // queue-owned closure and snapshots. See workq/diagnostics.md in the repository for endpoint
 // sharing, tuning, sampling, memory, and collection rules.
 //
+// Public diagnostics values belong to workq/diagnostics, and the wait-policy value belongs to
+// workq/wait as Strategy. This package retains its existing type aliases and constant forwards.
+// Executable lifecycle, observability, and overload recipes live under workq/examples.
+//
 // # Engine selection
 //
 // New picks the ring queue, called the engine, from the sides the caller declares.
@@ -102,7 +106,8 @@
 // ctx it receives, so the stage's handlers are the next stage's producers. Close the first queue
 // after its outside producers return. Wait until every Consume on it has returned, for example
 // with a sync.WaitGroup, and only then close the next queue. Closing every queue at once breaks
-// the rule for every queue after the first. Example_pipeline shows this order.
+// the rule for every queue after the first. The pipeline example in workq/examples/lifecycle
+// shows this order.
 //
 // # Queues that feed themselves
 //
@@ -134,8 +139,8 @@
 // At zero, no outside producer can push again, and no item is queued, in a handler, or on a
 // local stack, so no push can be in flight. The owner's count, and adding each producer's count
 // before the producer starts, stop a handler from closing the queue after the first seeder's
-// work is done but before a second seeder has counted itself. Example_selfFeeding shows
-// the pattern.
+// work is done but before a second seeder has counted itself. The self-feeding example in
+// workq/examples/lifecycle shows the pattern.
 //
 // On failure, record the cause and cancel peers and seeders. Do not decrement failed or abandoned
 // items merely to force zero. Still release owner and seeder lifetime counts as described above,

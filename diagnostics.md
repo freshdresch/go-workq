@@ -5,6 +5,13 @@ internal attempts and transitions. Keep application completion and latency measu
 them. Acquisition removes an item before processing succeeds, and a handler failure does not
 undo an acquisition. The [observability recipes](observability.md) cover application outcomes.
 
+The public values belong to [`workq/diagnostics`](diagnostics/diagnostics.go). Existing
+`workq.DiagnosticsConfig`, snapshot and histogram names, enum types, and constants remain compatible
+aliases and forwards. Either package's configuration works with `WithDiagnostics`.
+[`workq/wait.Strategy`](wait/wait.go) owns wait-policy values, and `workq.WaitStrategy` remains its
+alias. Construction, validation, queue methods, and endpoints stay in `workq`. Private storage,
+histogram recording, and reduction live in `workq/internal/diagnostics`.
+
 ## Start with a tuning question
 
 Start with `DiagnosticsCounters` and no extra probes. Compare requested and moved batch sizes,
@@ -116,9 +123,9 @@ queue, payload, waiter, context, or caller buffer. Retaining or editing it canno
 queue. Collection is safe concurrently with operations and other collectors. It performs no
 engine calls and starts no background work.
 
-`SchemaVersion` identifies array order and bucket interpretation. Version 1 uses the phase,
-outcome, source, and bucket constants in [diagnostics.go](diagnostics.go). Do not interpret an
-unknown enum value as zero. Assign application queue names outside this fixed schema.
+`SchemaVersion` identifies array order and bucket interpretation. Version 1 uses the phase, outcome,
+source, and bucket constants in [diagnostics schema](diagnostics/diagnostics.go). Do not interpret
+an unknown enum value as zero. Assign application queue names outside this fixed schema.
 
 `Config` reports the resolved diagnostics settings, engine kind, capacity, batch limits,
 effective wait strategies, and construction-time consumer wake cap. `Producer` and `Consumer`
@@ -343,7 +350,9 @@ Each shard includes both sides. At 16 shards,
 counters occupy 152 KiB and timing adds 124 KiB, plus the descriptor. The queue itself occupies
 816 bytes on amd64 in every mode. Engine storage, ring payloads, `Consume` buffers, waiter pools,
 and allocator rounding are separate. These are implementation layout figures, not API size
-promises. [Layout tests](diagnostics_layout_test.go) verify them.
+promises. [Storage layout tests](internal/diagnostics/layout_test.go) verify the descriptor
+and shards. [Queue layout tests](diagnostics_layout_test.go) verify the queue, endpoint,
+and wait-policy values.
 
 An endpoint value occupies 16 bytes on the current amd64 layout. Constructing a value requires
 no separate library heap allocation. Application storage and goroutine captures follow ordinary

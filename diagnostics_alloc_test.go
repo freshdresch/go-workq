@@ -253,20 +253,20 @@ func TestDiagnosticsAllocStorage(t *testing.T) {
 			queue, _ := newTestEngine(t, []Option{WithDiagnostics(config)})
 			storage := queue.diagnostics
 			want := unsafe.Sizeof(*storage) +
-				uintptr(cap(storage.counters))*unsafe.Sizeof(storage.counters[0])
+				uintptr(cap(storage.Counters))*unsafe.Sizeof(storage.Counters[0])
 			if mode == DiagnosticsTiming {
-				want += uintptr(cap(storage.timing)) * unsafe.Sizeof(storage.timing[0])
-			} else if len(storage.timing) != 0 {
+				want += uintptr(cap(storage.Timing)) * unsafe.Sizeof(storage.Timing[0])
+			} else if len(storage.Timing) != 0 {
 				t.Fatal("counter mode allocated timing shards")
 			}
-			got, ok := diagnosticsAllocationSize(storage.config)
-			if !ok || got != want || len(storage.counters) != shards {
+			got, ok := diagnosticsAllocationSize(storage.Config)
+			if !ok || got != want || len(storage.Counters) != shards {
 				t.Fatalf("storage = %d, %v, want %d with %d shards", got, ok, want, shards)
 			}
-			counters := unsafe.SliceData(storage.counters)
-			timing := unsafe.SliceData(storage.timing)
-			counterCapacity := cap(storage.counters)
-			timingCapacity := cap(storage.timing)
+			counters := unsafe.SliceData(storage.Counters)
+			timing := unsafe.SliceData(storage.Timing)
+			counterCapacity := cap(storage.Counters)
+			timingCapacity := cap(storage.Timing)
 			retained := queue.NewDiagnosticsEndpoint()
 			for range 4 * shards {
 				endpoint := queue.NewDiagnosticsEndpoint()
@@ -274,9 +274,9 @@ func TestDiagnosticsAllocStorage(t *testing.T) {
 					t.Fatal("endpoint lost queue binding")
 				}
 			}
-			if queue.diagnostics != storage || unsafe.SliceData(storage.counters) != counters ||
-				unsafe.SliceData(storage.timing) != timing ||
-				cap(storage.counters) != counterCapacity || cap(storage.timing) != timingCapacity {
+			if queue.diagnostics != storage || unsafe.SliceData(storage.Counters) != counters ||
+				unsafe.SliceData(storage.Timing) != timing ||
+				cap(storage.Counters) != counterCapacity || cap(storage.Timing) != timingCapacity {
 				t.Fatal("endpoint churn changed diagnostic storage")
 			}
 			if retained.queue != queue || retained.shard != 0 {

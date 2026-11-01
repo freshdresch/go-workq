@@ -1,4 +1,4 @@
-package workq_test
+package lifecycle_test
 
 import (
 	"context"

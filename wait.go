@@ -103,7 +103,7 @@ func (q *Queue[T]) yieldForItems(
 	}
 	for poll := range polls {
 		if poll > 0 {
-			recording.consumerCounters().recordYield(PhaseYield)
+			recording.consumerCounters().RecordYield(PhaseYield)
 			runtime.Gosched()
 		}
 		if received, finished, err = q.pollRegistered(ctx, recording, PhaseYield, dst); finished {
@@ -125,7 +125,7 @@ func (q *Queue[T]) pollWithoutParking(
 		if received, finished, err := q.pollRegistered(ctx, recording, PhaseNeverPark, dst); finished {
 			return received, err
 		}
-		recording.consumerCounters().recordYield(PhaseNeverPark)
+		recording.consumerCounters().RecordYield(PhaseNeverPark)
 		runtime.Gosched()
 	}
 }
@@ -340,7 +340,7 @@ func (q *Queue[T]) yieldForRoom(
 	}
 	for poll := range polls {
 		if poll > 0 {
-			recording.producerCounters().recordYield(PhaseYield)
+			recording.producerCounters().RecordYield(PhaseYield)
 			runtime.Gosched()
 		}
 		pushed, finished, err = q.attemptRegistered(ctx, recording, attempt, pushedBefore, PhaseYield)
@@ -371,7 +371,7 @@ func (q *Queue[T]) pushWithoutParking(
 		if finished {
 			return pushed, err
 		}
-		recording.producerCounters().recordYield(PhaseNeverPark)
+		recording.producerCounters().RecordYield(PhaseNeverPark)
 		runtime.Gosched()
 	}
 }

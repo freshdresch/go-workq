@@ -24,7 +24,7 @@ func TestDiagnosticsEndpointAssignment(t *testing.T) {
 				assert.Zero(t, first.shard)
 				copied := first
 				assert.Equal(t, first, copied)
-				assert.Equal(t, uint64(1), queue.diagnostics.creationTicket.Load())
+				assert.Equal(t, uint64(1), queue.diagnostics.CreationTicket.Load())
 				for i := 1; i < shards; i++ {
 					endpoint := queue.NewDiagnosticsEndpoint()
 					assert.Same(t, queue, endpoint.queue)
@@ -93,7 +93,7 @@ func TestDiagnosticsEndpointConcurrentAssignment(t *testing.T) {
 			for _, count := range counts {
 				assert.Equal(t, 4, count)
 			}
-			assert.Equal(t, uint64(len(endpoints)), queue.diagnostics.creationTicket.Load())
+			assert.Equal(t, uint64(len(endpoints)), queue.diagnostics.CreationTicket.Load())
 			assert.Equal(t, before, queue.Diagnostics())
 		})
 	}
@@ -104,11 +104,11 @@ func TestDiagnosticsEndpointTicketWrap(t *testing.T) {
 		Mode: DiagnosticsCounters, Shards: 4,
 	}))
 	require.NoError(t, err)
-	queue.diagnostics.creationTicket.Store(^uint64(0) - 1)
+	queue.diagnostics.CreationTicket.Store(^uint64(0) - 1)
 	for _, want := range []int{2, 3, 0, 1, 2, 3} {
 		assert.Equal(t, want, queue.NewDiagnosticsEndpoint().shard)
 	}
-	assert.Equal(t, uint64(4), queue.diagnostics.creationTicket.Load())
+	assert.Equal(t, uint64(4), queue.diagnostics.CreationTicket.Load())
 }
 
 func TestDiagnosticsEndpointMask(t *testing.T) {
@@ -152,14 +152,14 @@ func TestDiagnosticsEndpointProducerWideAlias(t *testing.T) {
 				require.NoError(t, err)
 				require.Equal(t, 1, moved)
 			}
-			for index := range queue.diagnostics.counters {
+			for index := range queue.diagnostics.Counters {
 				want := uint64(0)
 				if index == 300 {
 					want = 8
 				}
-				counters := &queue.diagnostics.counters[index].producer
-				assert.Equal(t, want, counters.attempts[PhaseInitial].Load())
-				assert.Equal(t, want, counters.movedSize.sum.Load())
+				counters := &queue.diagnostics.Counters[index].Producer
+				assert.Equal(t, want, counters.Attempts[PhaseInitial].Load())
+				assert.Equal(t, want, counters.MovedSize.Sum.Load())
 			}
 			snapshot := queue.Diagnostics().Producer
 			assert.Equal(t, uint64(8), snapshot.Attempts[PhaseInitial])

@@ -38,10 +38,10 @@ Queue capacity and live counter subtraction do not provide admission control for
 
 ## Reject an unaccepted suffix
 
-[`Example_overloadReject`](example_overload_test.go) offers `[1, 2, 3]` once to an empty queue
-with capacity two. No consumer runs during submission, so `TryPushBatch` accepts `[1, 2]` and
-returns `ErrFull`. The caller retains `[3]` as rejected work. The example then closes and drains
-the queue and reports exactly `[1, 2]` as completed.
+[`Example_overloadReject`](examples/overload/example_overload_test.go) offers `[1, 2, 3]` once to an
+empty queue with capacity two. No consumer runs during submission, so `TryPushBatch` accepts `[1,
+2]` and returns `ErrFull`. The caller retains `[3]` as rejected work. The example then closes and
+drains the queue and reports exactly `[1, 2]` as completed.
 
 Record the returned count before classifying the error. Only `items[n:]` remains unaccepted.
 The accepted prefix can already be in a handler when the producer gets an error. Copy a saved
@@ -59,10 +59,10 @@ or durable acknowledgment, and it does not retry rejected work.
 
 ## Give one submission a wait budget
 
-[`Example_overloadWaitBudget`](example_overload_test.go) fills a capacity-two queue with `[1, 2]`.
-It submits `3` with a short `context.WithTimeout` derived from the work abort context. The queue
-stays full until the call returns `context.DeadlineExceeded`. The caller records `3` as
-unaccepted, then closes and drains `[1, 2]` with the still-live work context.
+[`Example_overloadWaitBudget`](examples/overload/example_overload_test.go) fills a capacity-two
+queue with `[1, 2]`. It submits `3` with a short `context.WithTimeout` derived from the work abort
+context. The queue stays full until the call returns `context.DeadlineExceeded`. The caller records
+`3` as unaccepted, then closes and drains `[1, 2]` with the still-live work context.
 
 The child timeout does not cancel the parent workload or undo accepted work. Always release the
 child context with its cancel function. A failure that ends consumers still cancels the parent
@@ -77,7 +77,7 @@ service setting. Choose the budget from the application's requirements.
 Run both examples and their focused tests from the repository root:
 
 ```sh
-go test ./workq -run 'TestOverload|Example_overload' -count=1
+go test ./workq/examples/overload -run 'TestOverload|Example_overload' -count=1
 ```
 
 The output contains IDs and outcomes. It makes no elapsed-time promise.

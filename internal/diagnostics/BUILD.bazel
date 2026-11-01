@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "diagnostics",
+    srcs = ["snapshot.go", "storage.go"],
+    importpath = "github.com/freshdresch/go-data-structures/workq/internal/diagnostics",
+    visibility = ["//workq:__subpackages__"],
+    deps = ["//workq/diagnostics"],
+)
+
+go_test(
+    name = "diagnostics_test",
+    srcs = ["histogram_test.go", "layout_test.go", "snapshot_test.go"],
+    embed = [":diagnostics"],
+    deps = [
+        "//workq/diagnostics",
+        "@com_github_stretchr_testify//assert:assert",
+        "@com_github_stretchr_testify//require:require",
+    ],
+)

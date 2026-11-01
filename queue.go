@@ -174,7 +174,7 @@ func (q *Queue[T]) Close() {
 // DequeueBurst returns a fresh available count. See A4 in "Engine assumptions" in wakeup.md.
 func (q *Queue[T]) peekItems(recording *diagnosticsRecording) bool {
 	_, available := q.engine.DequeueBurst(nil)
-	recording.consumerCounters().recordCapacity(CleanupProbe, available, q.capacity)
+	recording.consumerCounters().RecordCapacity(CleanupProbe, available, q.capacity)
 	return available > 0
 }
 
@@ -182,6 +182,6 @@ func (q *Queue[T]) peekItems(recording *diagnosticsRecording) bool {
 // EnqueueBurst returns a fresh free count. See A4 in "Engine assumptions" in wakeup.md.
 func (q *Queue[T]) peekRoom(recording *diagnosticsRecording) bool {
 	_, free := q.engine.EnqueueBurst(nil)
-	recording.producerCounters().recordCapacity(CleanupProbe, free, q.capacity)
+	recording.producerCounters().RecordCapacity(CleanupProbe, free, q.capacity)
 	return free > 0
 }

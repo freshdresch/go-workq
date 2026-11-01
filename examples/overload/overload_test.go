@@ -1,4 +1,4 @@
-package workq_test
+package overload_test
 
 import (
 	"context"
@@ -126,5 +126,14 @@ func TestOverloadWaitBudget(t *testing.T) {
 				require.Equal(t, []int{1, 2, 3}, append(completed, unaccepted...))
 			})
 		})
+	}
+}
+
+func requirePending(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+		t.Fatal("operation returned before its dependency")
+	default:
 	}
 }

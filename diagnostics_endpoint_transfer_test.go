@@ -93,12 +93,12 @@ func TestDiagnosticsEndpointProducerBinding(t *testing.T) {
 					return
 				}
 				for index, want := range []uint64{6, 3, 0, 0} {
-					counters := &queue.diagnostics.counters[index].producer
-					assert.Equal(t, want, counters.attempts[PhaseInitial].Load())
-					assert.Equal(t, want, counters.requestedSize.count.Load())
-					assert.Equal(t, want, counters.movedSize.sum.Load())
+					counters := &queue.diagnostics.Counters[index].Producer
+					assert.Equal(t, want, counters.Attempts[PhaseInitial].Load())
+					assert.Equal(t, want, counters.RequestedSize.Count.Load())
+					assert.Equal(t, want, counters.MovedSize.Sum.Load())
 				}
-				assert.Equal(t, uint64(2), queue.diagnostics.creationTicket.Load())
+				assert.Equal(t, uint64(2), queue.diagnostics.CreationTicket.Load())
 				assert.Equal(t, uint64(9), queue.Diagnostics().Producer.MovedSize.Sum)
 				kind := callEnqueue
 				if method.batch {
@@ -228,11 +228,11 @@ func TestDiagnosticsEndpointProducerBoundaries(t *testing.T) {
 				}
 				assert.Equal(t, uint64(len(requested)), snapshot.RequestedSize.Count)
 				assert.Equal(t, uint64(len(accepted)), snapshot.MovedSize.Count)
-				assert.Zero(t, queue.diagnostics.counters[0].producer.attempts[PhaseInitial].Load())
+				assert.Zero(t, queue.diagnostics.Counters[0].Producer.Attempts[PhaseInitial].Load())
 				assert.Equal(
 					t,
 					uint64(len(requested)),
-					queue.diagnostics.counters[1].producer.attempts[PhaseInitial].Load(),
+					queue.diagnostics.Counters[1].Producer.Attempts[PhaseInitial].Load(),
 				)
 				assertIdleQueue(t, queue)
 			})
@@ -286,11 +286,11 @@ func TestDiagnosticsEndpointReceiveBinding(t *testing.T) {
 							if size == 0 {
 								attempts = 0
 							}
-							counters := &queue.diagnostics.counters[index].consumer
-							assert.Equal(t, attempts, counters.attempts[PhaseInitial].Load())
-							assert.Equal(t, attempts, counters.requestedSize.count.Load())
-							assert.Equal(t, attempts*uint64(requested), counters.movedSize.sum.Load())
-							assert.Equal(t, attempts, counters.capacityCompletedProbes.Load())
+							counters := &queue.diagnostics.Counters[index].Consumer
+							assert.Equal(t, attempts, counters.Attempts[PhaseInitial].Load())
+							assert.Equal(t, attempts, counters.RequestedSize.Count.Load())
+							assert.Equal(t, attempts*uint64(requested), counters.MovedSize.Sum.Load())
+							assert.Equal(t, attempts, counters.CapacityCompletedProbes.Load())
 						}
 					}
 					kind := callDequeueBurst
@@ -436,11 +436,11 @@ func TestDiagnosticsEndpointConsumeBinding(t *testing.T) {
 					if outcome == "complete" {
 						attempts *= 2
 					}
-					counters := &queue.diagnostics.counters[index].consumer
-					assert.Equal(t, attempts, counters.attempts[PhaseInitial].Load())
-					assert.Equal(t, attempts, counters.requestedSize.count.Load())
-					assert.Equal(t, 2*attempts, counters.movedSize.sum.Load())
-					assert.Equal(t, attempts, counters.capacityCompletedProbes.Load())
+					counters := &queue.diagnostics.Counters[index].Consumer
+					assert.Equal(t, attempts, counters.Attempts[PhaseInitial].Load())
+					assert.Equal(t, attempts, counters.RequestedSize.Count.Load())
+					assert.Equal(t, 2*attempts, counters.MovedSize.Sum.Load())
+					assert.Equal(t, attempts, counters.CapacityCompletedProbes.Load())
 				}
 			})
 		}

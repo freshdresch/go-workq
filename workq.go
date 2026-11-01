@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/freshdresch/go-data-structures/ring"
+	"github.com/freshdresch/go-data-structures/workq/wait"
 )
 
 var (
@@ -52,16 +53,7 @@ func defaultProducerWait() WaitStrategy {
 // Go 1.25 or later adjusts it
 // when a container's CPU limit changes. Staleness affects spinning and consumer fanout, never
 // correctness.
-type WaitStrategy struct {
-	// Spins is the number of empty polls before the first yield.
-	Spins int
-	// Yields is the number of polls with runtime.Gosched between them, after the spins.
-	Yields int
-	// NeverPark makes the caller keep yielding after the yields instead of parking. It stays
-	// registered as a poller for the whole wait, so the other side never takes a mutex to wake
-	// it, at the cost of the CPU time it spends yielding.
-	NeverPark bool
-}
+type WaitStrategy = wait.Strategy
 
 // Option configures a queue at construction. Options apply in argument order, and New validates
 // only the final values.

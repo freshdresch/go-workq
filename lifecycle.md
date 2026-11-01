@@ -22,8 +22,8 @@ if source stop was requested. It records both the accepted prefix and the unacce
 Source stop is cooperative: an admission can overlap the request. Joining producers establishes
 when all publication has stopped. A strict admission cutoff needs the gate below.
 
-[Example_gracefulShutdown](example_lifecycle_test.go) shows a fixed set of registered producers.
-Its owner follows this sequence:
+[Example_gracefulShutdown](examples/lifecycle/example_lifecycle_test.go) shows a fixed set of
+registered producers. Its owner follows this sequence:
 
 1. Start the grace deadline and request source stop.
 2. Keep consumers running while joining producers.
@@ -48,8 +48,8 @@ accepted items queued, acquired items unfinished, and unaccepted items with the 
 
 ## A strict admission cutoff
 
-For dynamic submitters, register each admitted call under the same mutex that closes admission.
-This is the private `admissionGate` used by the [lifecycle tests](lifecycle_test.go):
+For dynamic submitters, register each admitted call under the same mutex that closes admission. This
+is the private `admissionGate` used by the [lifecycle tests](examples/lifecycle/lifecycle_test.go):
 
 ```go
 type admissionGate struct {
@@ -95,18 +95,18 @@ Start `context.WithTimeout` immediately before requesting source stop. The grace
 cover both producer joins and consumer drain. A producer parked on a full queue needs coverage
 before consumers can finish.
 
-The private `drainQueue` in [example_lifecycle_test.go](example_lifecycle_test.go) derives a
-cancelable supervision context from the grace context. Its watcher requests abort only when
-that child's error is `context.DeadlineExceeded`. After both worker joins, `drainQueue` cancels
-the child and joins the watcher. The caller also cancels the parent grace context to release
-its timer.
+The private `drainQueue` in
+[example_lifecycle_test.go](examples/lifecycle/example_lifecycle_test.go) derives a cancelable
+supervision context from the grace context. Its watcher requests abort only when that child's error
+is `context.DeadlineExceeded`. After both worker joins, `drainQueue` cancels the child and joins the
+watcher. The caller also cancels the parent grace context to release its timer.
 
-Canceling the child after successful drain records `context.Canceled`, even if the watcher
-first runs after the parent's deadline. The watcher checks its own context, so that later
-expiration cannot turn completed drain into an abort. If expiration wins the cancellation
-race, the child retains `context.DeadlineExceeded`. Genuine overlap can resolve either way.
+Canceling the child after successful drain records `context.Canceled`, even if the watcher first
+runs after the parent's deadline. The watcher checks its own context, so that later expiration
+cannot turn completed drain into an abort. If expiration wins the cancellation race, the child
+retains `context.DeadlineExceeded`. Genuine overlap can resolve either way.
 `TestLifecycleCompletedDrainStopsSupervision` exercises delayed watcher observation in the
-[lifecycle tests](lifecycle_test.go).
+[lifecycle tests](examples/lifecycle/lifecycle_test.go).
 
 The deadline bounds when the owner requests abort. It does not bound when the owner returns.
 Sources, handlers, engine operations, and resource cleanup must return before their joins
@@ -173,20 +173,20 @@ as unaccepted, even when `err` is non-nil. Copy any saved slices. Under the no-c
 contract, consumers can complete the accepted prefix before `PushBatch` returns. Never replay
 that prefix solely because the call returned an error.
 
-[Example_partialPushBatch](example_lifecycle_test.go) uses capacity 2, push limit 1, and an
-already canceled context. Its first call accepts one item, then returns `context.Canceled`.
-With consumers running and a live context, it submits only the suffix. Such a retry requires
-that the application still wants the work and consumers remain available. During abort, these
-recipes retain the unaccepted suffix for reconciliation and do not retry it. `TryPushBatch`
-returning `ErrFull` uses the same prefix rule. A close race does not permit a blanket retry of
-accepted or uncertain work.
+[Example_partialPushBatch](examples/lifecycle/example_lifecycle_test.go) uses capacity 2, push limit
+1, and an already canceled context. Its first call accepts one item, then returns
+`context.Canceled`. With consumers running and a live context, it submits only the suffix. Such a
+retry requires that the application still wants the work and consumers remain available. During
+abort, these recipes retain the unaccepted suffix for reconciliation and do not retry it.
+`TryPushBatch` returning `ErrFull` uses the same prefix rule. A close race does not permit a blanket
+retry of accepted or uncertain work.
 
-[Example_handlerFailure](example_lifecycle_test.go) demonstrates fail-fast processing of an
-acquired batch. Its private `processBatch` records copied completed, failed, and unattempted
-IDs. The failed item can have an uncertain external side effect. Items after it were acquired
-but not attempted. None returns to the queue automatically. An abort check before an item
-leaves that item and the remaining suffix unattempted. These acquired IDs differ from a
-producer's unaccepted suffix.
+[Example_handlerFailure](examples/lifecycle/example_lifecycle_test.go) demonstrates fail-fast
+processing of an acquired batch. Its private `processBatch` records copied completed, failed, and
+unattempted IDs. The failed item can have an uncertain external side effect. Items after it were
+acquired but not attempted. None returns to the queue automatically. An abort check before an item
+leaves that item and the remaining suffix unattempted. These acquired IDs differ from a producer's
+unaccepted suffix.
 
 An application can instead handle recoverable per-item errors and continue, or finish a batch
 before returning an aggregate failure. Those are different completion policies. Replaying a
@@ -206,11 +206,11 @@ resource cleanup implementation or durable completion record.
 
 ## Pipelines
 
-[Example_pipeline](example_test.go) shares `abortCtx` across both stages and its outside producer.
-Only outside sources observe graceful source stop. A stage 1 handler is a stage 2 producer.
-The private `closePipeline` therefore joins outside producers, closes stage 1, joins stage 1
-consumers, closes stage 2, and joins stage 2 consumers. Use that order on success and abort.
-Do not close every queue together while upstream handlers can still publish.
+[Example_pipeline](examples/lifecycle/example_test.go) shares `abortCtx` across both stages and its
+outside producer. Only outside sources observe graceful source stop. A stage 1 handler is a stage 2
+producer. The private `closePipeline` therefore joins outside producers, closes stage 1, joins stage
+1 consumers, closes stage 2, and joins stage 2 consumers. Use that order on success and abort. Do
+not close every queue together while upstream handlers can still publish.
 
 The private `forwardDoubled` allocates new doubled values and returns copied forwarded and
 unforwarded partitions. Its handler saves that report before returning an error. The forwarded
@@ -218,18 +218,19 @@ prefix belongs to stage 2. The unforwarded suffix is already acquired upstream w
 the entire upstream batch could duplicate downstream effects. Forwarding is not an atomic
 transfer between queues.
 
-`TestLifecyclePipelineFailure` in [lifecycle_test.go](lifecycle_test.go) holds a failing stage 2
-handler while stage 1 forwards `[4]` and parks on `[6]`. The downstream failure is recorded
-before cancellation releases the upstream push. Shared cancellation adds no duplicate failure.
-The test joins both stages through the same closure function and reconciles the prefix and suffix.
+`TestLifecyclePipelineFailure` in [lifecycle_test.go](examples/lifecycle/lifecycle_test.go) holds a
+failing stage 2 handler while stage 1 forwards `[4]` and parks on `[6]`. The downstream failure is
+recorded before cancellation releases the upstream push. Shared cancellation adds no duplicate
+failure. The test joins both stages through the same closure function and reconciles the prefix and
+suffix.
 
 ## Self-feeding queues
 
-[Example_selfFeeding](example_test.go) counts each item before publication, including children
-that overflow onto a handler's local stack. The private `visitTree` offers children once with
-`TryPushBatch`, then processes its unaccepted suffix locally on `ErrFull`. It never blocks or
-loops retrying publication into its own full queue. It checks abort between local items and
-finishes an item's count only after its processing and publication step succeeds.
+[Example_selfFeeding](examples/lifecycle/example_test.go) counts each item before publication,
+including children that overflow onto a handler's local stack. The private `visitTree` offers
+children once with `TryPushBatch`, then processes its unaccepted suffix locally on `ErrFull`. It
+never blocks or loops retrying publication into its own full queue. It checks abort between local
+items and finishes an item's count only after its processing and publication step succeeds.
 
 The owner starts with a lifetime token. Each seeder receives its own token before it starts
 and retains it until its final queue call returns. The owner releases its token after registering
@@ -243,12 +244,21 @@ closes for cleanup even when the count remains positive. That close is safe beca
 or seeder can publish again. A repeated close is harmless if normal completion won a race.
 Local stacks and queued payloads still need application cleanup when they own resources.
 
-`TestLifecycleSelfFeedingFailure` in [lifecycle_test.go](lifecycle_test.go) holds roots 1 and 10
-while a seeder fills the queue with 20 and parks on 21. Root 1 overflows children to its local
-stack and fails on node 3. Root 10 observes abort. All workers join with outstanding work still
-positive. The test does not decrement abandoned work to simulate completion or resume traversal.
+`TestLifecycleSelfFeedingFailure` in [lifecycle_test.go](examples/lifecycle/lifecycle_test.go) holds
+roots 1 and 10 while a seeder fills the queue with 20 and parks on 21. Root 1 overflows children to
+its local stack and fails on node 3. Root 10 observes abort. All workers join with outstanding work
+still positive. The test does not decrement abandoned work to simulate completion or resume
+traversal.
 
 For a self-feeding pipeline stage, hold an upstream producer token until every upstream
 `Consume` returns. Upstream handlers can publish until then. Failure still uses shared abort
 and joins. Publishing handlers invalidate a single-producer declaration, so these examples use
 MPMC. Queue capacity does not bound memory held in local stacks, acquired batches, or producers.
+
+## Run the recipes
+
+From the repository root, run the lifecycle examples and their supporting tests:
+
+```sh
+go test ./workq/examples/lifecycle -count=1
+```

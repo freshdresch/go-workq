@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "overload",
+    srcs = ["doc.go"],
+    importpath = "github.com/freshdresch/go-data-structures/workq/examples/overload",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "overload_test",
+    srcs = [
+        "example_overload_test.go",
+        "overload_test.go",
+    ],
+    embed = [":overload"],
+    deps = [
+        "//workq",
+        "@com_github_stretchr_testify//require:require",
+    ],
+)

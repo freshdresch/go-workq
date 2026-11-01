@@ -4,7 +4,7 @@ package workq
 // See "Consumer wake groups" in wakeup.md for the target and its limits.
 func (q *Queue[T]) consumerTarget(recording *diagnosticsRecording, source CapacitySource) uint32 {
 	_, available := q.engine.DequeueBurst(nil)
-	recording.consumerCounters().recordCapacity(source, available, q.capacity)
+	recording.consumerCounters().RecordCapacity(source, available, q.capacity)
 	if available == 0 {
 		return 0
 	}

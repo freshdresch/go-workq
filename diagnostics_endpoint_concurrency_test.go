@@ -10,6 +10,8 @@ import (
 	"testing/synctest"
 	"time"
 
+	internaldiagnostics "github.com/freshdresch/go-data-structures/workq/internal/diagnostics"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -205,16 +207,10 @@ func TestDiagnosticsEndpointConsumeHandlerPush(t *testing.T) {
 		assert.Equal(
 			t, snapshot.Consumer.CapacityEligibleAttempts, snapshot.Consumer.CapacityCompletedProbes,
 		)
-		for _, counters := range []*diagnosticsSideCounters{
-			&queue.diagnostics.counters[1].producer.diagnosticsSideCounters,
-			&queue.diagnostics.counters[1].consumer.diagnosticsSideCounters,
-		} {
-			var unused DiagnosticsSideSnapshot
-			unused.initializeHistogramMinima()
-			unused.addCounters(counters, nil)
-			unused.normalizeEmptyHistograms()
-			assert.Zero(t, unused)
-		}
+		unusedStorage := internaldiagnostics.Storage{Counters: queue.diagnostics.Counters[1:2]}
+		unused := unusedStorage.Snapshot(nil)
+		assert.Zero(t, unused.Producer)
+		assert.Zero(t, unused.Consumer)
 		assertIdleQueue(t, queue)
 	})
 }

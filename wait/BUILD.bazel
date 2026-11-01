@@ -1,0 +1,8 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "wait",
+    srcs = ["wait.go"],
+    importpath = "github.com/freshdresch/go-data-structures/workq/wait",
+    visibility = ["//visibility:public"],
+)

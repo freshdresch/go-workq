@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "observability",
+    srcs = ["doc.go"],
+    importpath = "github.com/freshdresch/go-data-structures/workq/examples/observability",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "observability_test",
+    srcs = [
+        "example_observability_test.go",
+        "observability_test.go",
+    ],
+    embed = [":observability"],
+    deps = [
+        "//workq",
+        "@com_github_stretchr_testify//require:require",
+    ],
+)

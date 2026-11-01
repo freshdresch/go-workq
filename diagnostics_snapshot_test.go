@@ -6,51 +6,11 @@ import (
 	"testing"
 	"testing/synctest"
 
+	internaldiagnostics "github.com/freshdresch/go-data-structures/workq/internal/diagnostics"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestDiagnosticsSnapshotOverlappingSeries(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		queue, _ := newProducerDiagnosticsQueue(t, 0)
-		counters := &queue.diagnostics.counters[0].producer.diagnosticsSideCounters
-		counters.waitStarts.Store(10)
-		loaded := make(chan struct{})
-		resume := make(chan struct{})
-		firstResults := make(chan DiagnosticsSnapshot, 1)
-		go func() {
-			firstResults <- queue.collectDiagnostics(&diagnosticsReductionControl{
-				counters: counters,
-				loaded:   loaded,
-				resume:   resume,
-			})
-		}()
-		<-loaded
-		counters.waitStarts.Add(1)
-		second := queue.Diagnostics()
-		assert.Equal(t, uint64(11), second.Producer.WaitStarts)
-		select {
-		case <-firstResults:
-			t.Fatal("first collector returned before its barrier was released")
-		default:
-		}
-		close(resume)
-		first := <-firstResults
-		assert.Equal(t, uint64(10), first.Producer.WaitStarts)
-		assert.Greater(t, second.Producer.WaitStarts, first.Producer.WaitStarts)
-
-		// Each collector retains its own baseline despite the reversed completion order.
-		counters.waitStarts.Add(2)
-		firstNext := make(chan DiagnosticsSnapshot, 1)
-		secondNext := make(chan DiagnosticsSnapshot, 1)
-		go func() { firstNext <- queue.Diagnostics() }()
-		go func() { secondNext <- queue.Diagnostics() }()
-		firstDelta := (<-firstNext).Producer.WaitStarts - first.Producer.WaitStarts
-		secondDelta := (<-secondNext).Producer.WaitStarts - second.Producer.WaitStarts
-		assert.Equal(t, uint64(3), firstDelta)
-		assert.Equal(t, uint64(2), secondDelta)
-	})
-}
 
 func TestDiagnosticsSnapshotSequentialDelta(t *testing.T) {
 	queue, _ := newProducerDiagnosticsQueue(t, 0)
@@ -241,10 +201,10 @@ func TestDiagnosticsSnapshotEndpointCloseDrain(t *testing.T) {
 		resume := make(chan struct{})
 		firstResults := make(chan DiagnosticsSnapshot, 1)
 		go func() {
-			firstResults <- queue.collectDiagnostics(&diagnosticsReductionControl{
-				counters: &queue.diagnostics.counters[producer.shard].producer.diagnosticsSideCounters,
-				loaded:   loaded,
-				resume:   resume,
+			firstResults <- queue.collectDiagnostics(&internaldiagnostics.ReductionControl{
+				Counters: &queue.diagnostics.Counters[producer.shard].Producer.SideCounters,
+				Loaded:   loaded,
+				Resume:   resume,
 			})
 		}()
 		<-loaded

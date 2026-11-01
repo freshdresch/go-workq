@@ -3,7 +3,6 @@ package workq
 import (
 	"fmt"
 	"testing"
-	"unsafe"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,46 +25,13 @@ func TestDiagnosticsConfigModesAndShards(t *testing.T) {
 					}
 					if mode == DiagnosticsTiming {
 						cfg.TimingSampleEvery = 64
-						require.Len(t, queue.diagnostics.timing, cfg.Shards)
+						require.Len(t, queue.diagnostics.Timing, cfg.Shards)
 					} else {
-						assert.Nil(t, queue.diagnostics.timing)
+						assert.Nil(t, queue.diagnostics.Timing)
 					}
-					require.Len(t, queue.diagnostics.counters, cfg.Shards)
+					require.Len(t, queue.diagnostics.Counters, cfg.Shards)
 					assert.Equal(t, cfg, queue.Diagnostics().Config.DiagnosticsConfig)
-					assert.Equal(t, cfg, queue.diagnostics.config)
-					for i := range queue.diagnostics.counters {
-						shard := &queue.diagnostics.counters[i]
-						for _, side := range []*diagnosticsSideCounters{
-							&shard.producer.diagnosticsSideCounters,
-							&shard.consumer.diagnosticsSideCounters,
-						} {
-							assert.Equal(t, ^uint64(0), side.requestedSize.min.Load())
-							assert.Equal(t, ^uint64(0), side.movedSize.min.Load())
-							for j := range side.capacity {
-								assert.Equal(t, ^uint64(0), side.capacity[j].min.Load())
-							}
-						}
-						assert.Equal(t, ^uint64(0), shard.consumer.groupTarget.min.Load())
-						assert.Equal(t, ^uint64(0), shard.consumer.groupActualSize.min.Load())
-					}
-					for i := range queue.diagnostics.timing {
-						shard := &queue.diagnostics.timing[i]
-						for _, side := range []*diagnosticsSideTiming{&shard.producer, &shard.consumer} {
-							for j := range side.waitDuration {
-								assert.Equal(t, ^uint64(0), side.waitDuration[j].min.Load())
-							}
-							for j := range side.parkSelectDuration {
-								assert.Equal(t, ^uint64(0), side.parkSelectDuration[j].min.Load())
-							}
-						}
-					}
-					stride := unsafe.Sizeof(diagnosticsCounterShard{})
-					if mode == DiagnosticsTiming {
-						stride += unsafe.Sizeof(diagnosticsTimingShard{})
-					}
-					size, ok := diagnosticsAllocationSize(cfg)
-					require.True(t, ok)
-					assert.Equal(t, unsafe.Sizeof(diagnostics{})+uintptr(cfg.Shards)*stride, size)
+					assert.Equal(t, cfg, queue.diagnostics.Config)
 				},
 			)
 		}

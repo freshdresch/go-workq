@@ -21,8 +21,8 @@ func (q *Queue[T]) NewDiagnosticsEndpoint() DiagnosticsEndpoint[T] {
 	if q.diagnostics == nil {
 		return endpoint
 	}
-	ticket := q.diagnostics.creationTicket.Add(1) - 1
-	endpoint.shard = diagnosticsShardIndex(ticket, len(q.diagnostics.counters))
+	ticket := q.diagnostics.CreationTicket.Add(1) - 1
+	endpoint.shard = diagnosticsShardIndex(ticket, len(q.diagnostics.Counters))
 	return endpoint
 }
 

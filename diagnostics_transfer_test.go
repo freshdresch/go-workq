@@ -179,9 +179,9 @@ func TestDiagnosticsProducerMultipleEpisodes(t *testing.T) {
 	assert.Equal(t, uint64(6), snapshot.CapacityCompletedProbes)
 	assert.Equal(t, uint64(3), snapshot.Registrations)
 	activeShards := 0
-	for index := range queue.diagnostics.counters {
-		counters := &queue.diagnostics.counters[index].producer
-		if counters.attempts[PhaseInitial].Load() > 0 {
+	for index := range queue.diagnostics.Counters {
+		counters := &queue.diagnostics.Counters[index].Producer
+		if counters.Attempts[PhaseInitial].Load() > 0 {
 			activeShards++
 		}
 	}
@@ -377,8 +377,8 @@ func TestDiagnosticsConsumeAcquisition(t *testing.T) {
 			}
 			assert.Equal(t, uint64(2*handled), queue.Diagnostics().Consumer.MovedSize.Sum)
 			activeShards := 0
-			for index := range queue.diagnostics.counters {
-				if queue.diagnostics.counters[index].consumer.requestedSize.count.Load() > 0 {
+			for index := range queue.diagnostics.Counters {
+				if queue.diagnostics.Counters[index].Consumer.RequestedSize.Count.Load() > 0 {
 					activeShards++
 				}
 			}
