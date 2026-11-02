@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "durable",
+    srcs = [
+        "config.go",
+        "encoding.go",
+        "errors.go",
+        "schema.go",
+        "store.go",
+        "types.go",
+    ],
+    importpath = "github.com/freshdresch/go-data-structures/workq/durable",
+    visibility = ["//visibility:public"],
+    deps = ["@com_github_mattn_go_sqlite3//:go-sqlite3"],
+)
+
+go_test(
+    name = "durable_test",
+    srcs = [
+        "config_test.go",
+        "encoding_test.go",
+        "store_test.go",
+        "types_test.go",
+    ],
+    embed = [":durable"],
+    deps = [
+        "@com_github_mattn_go_sqlite3//:go-sqlite3",
+        "@com_github_stretchr_testify//assert:assert",
+        "@com_github_stretchr_testify//require:require",
+    ],
+)
