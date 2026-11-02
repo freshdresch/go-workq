@@ -1,4 +1,3 @@
-// Package durable defines the storage foundation for a bounded SQLite WAL work queue.
 package durable
 
 import (

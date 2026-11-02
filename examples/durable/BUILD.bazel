@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "durable_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/freshdresch/go-data-structures/workq/examples/durable",
+    visibility = ["//visibility:private"],
+    deps = ["//workq/durable", "//workq/runner"],
+)
+
+go_binary(
+    name = "durable",
+    embed = [":durable_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "durable_test",
+    srcs = ["main_test.go"],
+    embed = [":durable_lib"],
+    deps = [
+        "//workq/durable",
+        "//workq/runner",
+        "@com_github_stretchr_testify//assert:assert",
+        "@com_github_stretchr_testify//require:require",
+    ],
+)
