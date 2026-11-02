@@ -30,31 +30,42 @@ func (s *store) validate(ctx context.Context) (storeMetadata, uint64, error) {
 	if err != nil {
 		return storeMetadata{}, 0, err
 	}
-	counts, records, err := s.validateRecords(ctx, metadata)
+	records, err := s.validateLogicalState(ctx, metadata)
 	if err != nil {
 		return storeMetadata{}, 0, err
 	}
-	if counts != metadata.counts {
-		return storeMetadata{}, 0, corrupt("stored counts")
+	return metadata, records, nil
+}
+
+func (s *store) validateLogicalState(ctx context.Context, metadata storeMetadata) (uint64, error) {
+	counts, records, err := s.validateRecords(ctx, metadata)
+	if err != nil {
+		return 0, err
 	}
-	return metadata, records + metaCleanupMarkers, nil
+	if counts != metadata.counts {
+		return 0, corrupt("stored counts")
+	}
+	return records + metaCleanupMarkers, nil
 }
 
 func corrupt(reason string) error { return fmt.Errorf("%s: %w", reason, ErrStorage) }
 
 func (s *store) validateSchema(ctx context.Context) (err error) {
-	rows, err := s.conn.QueryContext(ctx, "PRAGMA integrity_check")
+	rows, err := s.conn.QueryContext(
+		ctx,
+		"SELECT integrity_check='ok' FROM pragma_integrity_check LIMIT 1",
+	)
 	if err != nil {
-		return errors.Join(ErrStorage, err)
+		return classifySQLError(err)
 	}
-	defer func(opened *sql.Rows) { err = errors.Join(err, opened.Close()) }(rows)
+	defer func(opened *sql.Rows) { err = errors.Join(err, classifySQLError(opened.Close())) }(rows)
 	checked := false
 	for rows.Next() {
-		var result string
+		var result bool
 		if err := rows.Scan(&result); err != nil {
 			return err
 		}
-		if result != "ok" {
+		if !result {
 			return corrupt("SQLite integrity")
 		}
 		checked = true
@@ -68,23 +79,31 @@ func (s *store) validateSchema(ctx context.Context) (err error) {
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	expected := strings.Split(strings.TrimSpace(schemaDDL), ";")
-	rows, err = s.conn.QueryContext(ctx,
-		"SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY name")
+	expected := strings.Split(strings.TrimSuffix(strings.TrimSpace(schemaDDL), ";"), ";")
+	for i := range expected {
+		expected[i] = strings.Join(strings.Fields(expected[i]), " ")
+	}
+	// Bound Go transfers before Scan. SQLite's native schema loading is separate.
+	rows, err = s.conn.QueryContext(ctx, `SELECT
+ CASE WHEN length(CAST(sql AS BLOB))<=? THEN sql ELSE NULL END
+ FROM sqlite_schema WHERE sql IS NOT NULL LIMIT ?`, len(schemaDDL), len(expected)+1)
 	if err != nil {
 		return err
 	}
-	defer func(opened *sql.Rows) { err = errors.Join(err, opened.Close()) }(rows)
+	defer func(opened *sql.Rows) { err = errors.Join(err, classifySQLError(opened.Close())) }(rows)
 	count := 0
 	for rows.Next() {
-		var statement string
+		var statement sql.NullString
 		if err := rows.Scan(&statement); err != nil {
 			return err
 		}
-		normalized := strings.Join(strings.Fields(statement), " ")
+		if !statement.Valid || count == len(expected) {
+			return ErrUnsupported
+		}
+		normalized := strings.Join(strings.Fields(statement.String), " ")
 		found := false
 		for _, candidate := range expected {
-			if normalized == strings.Join(strings.Fields(candidate), " ") {
+			if normalized == candidate {
 				found = true
 				break
 			}
@@ -97,7 +116,7 @@ func (s *store) validateSchema(ctx context.Context) (err error) {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if count != 7 {
+	if count != len(expected) {
 		return ErrUnsupported
 	}
 	return nil
@@ -109,7 +128,7 @@ func (s *store) readMetadata(ctx context.Context) (_ storeMetadata, err error) {
 	if err != nil {
 		return storeMetadata{}, err
 	}
-	defer func(opened *sql.Rows) { err = errors.Join(err, opened.Close()) }(rows)
+	defer func(opened *sql.Rows) { err = errors.Join(err, classifySQLError(opened.Close())) }(rows)
 	var values [metaCleanupMarkers][]byte
 	count := 0
 	for rows.Next() {
@@ -195,7 +214,7 @@ func (s *store) validateRecords(
 	if err != nil {
 		return counts, records, err
 	}
-	defer func(opened *sql.Rows) { err = errors.Join(err, opened.Close()) }(rows)
+	defer func(opened *sql.Rows) { err = errors.Join(err, classifySQLError(opened.Close())) }(rows)
 	for rows.Next() {
 		var producer, floor []byte
 		var retired, cleanup int
@@ -233,7 +252,7 @@ func (s *store) validateRecords(
 	if err != nil {
 		return counts, records, err
 	}
-	defer func(opened *sql.Rows) { err = errors.Join(err, opened.Close()) }(rows)
+	defer func(opened *sql.Rows) { err = errors.Join(err, classifySQLError(opened.Close())) }(rows)
 	for rows.Next() {
 		var key, digest, order, token []byte
 		var state int
@@ -251,8 +270,11 @@ func (s *store) validateRecords(
 		var floor []byte
 		err := s.conn.QueryRowContext(ctx, `SELECT has_retirement, retired_through, cleanup_needed
  FROM producers WHERE producer=?`, key[:16]).Scan(&retired, &floor, &cleanup)
-		if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			return counts, records, errors.Join(corrupt("receipt producer"), err)
+		}
+		if err != nil {
+			return counts, records, classifySQLError(err)
 		}
 		if retired == 1 && bytes.Compare(key[16:], floor) <= 0 {
 			if state == 0 || cleanup == 0 {

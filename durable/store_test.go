@@ -1,9 +1,12 @@
 package durable
 
 import (
+	"context"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,6 +202,130 @@ func TestSQLiteEffectiveUnitConversions(t *testing.T) {
 			assert.Equal(t, int64(-8192), settings.CacheSize)
 			assert.Equal(t, int64(timeout/time.Millisecond), settings.BusyTimeout)
 			assert.Zero(t, settings.MmapSize)
+		})
+	}
+}
+
+func TestSchemaValidationBoundsGoAllocation(t *testing.T) {
+	// Keep this test sequential because TotalAlloc includes all Go goroutines.
+	storage, _ := newTestStore(t)
+	statement := "CREATE TABLE z_extra (x TEXT DEFAULT '" + strings.Repeat("x", 1<<20) + "')"
+	_, err := storage.conn.ExecContext(t.Context(), statement)
+	require.NoError(t, err)
+	var length int
+	err = storage.conn.QueryRowContext(t.Context(),
+		"SELECT length(CAST(sql AS BLOB)) FROM sqlite_schema WHERE name='z_extra'").Scan(&length)
+	require.NoError(t, err)
+	require.Greater(t, length, 1<<20)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	err = storage.validateSchema(t.Context())
+	runtime.ReadMemStats(&after)
+	assert.ErrorIs(t, err, ErrUnsupported)
+	allocated := after.TotalAlloc - before.TotalAlloc
+	t.Logf("SQL bytes=%d, Go allocation bytes=%d", length, allocated)
+	// This catches full SQL transfer/copies, not native SQLite schema allocations.
+	assert.Less(t, allocated, uint64(256<<10))
+}
+
+func TestStoreLookupCancellationAndStorageCategories(t *testing.T) {
+	t.Parallel()
+	storage, _ := newTestStore(t)
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	expired, cancelDeadline := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer cancelDeadline()
+	for _, ctx := range []context.Context{canceled, expired} {
+		statuses, err := storage.lookup(ctx, []ID{{Sequence: 1}})
+		assert.Nil(t, statuses)
+		assert.ErrorIs(t, err, ctx.Err())
+		assert.NotErrorIs(t, err, ErrStorage)
+	}
+	_, err := storage.conn.ExecContext(t.Context(), "DROP TABLE producers")
+	require.NoError(t, err)
+	statuses, err := storage.lookup(t.Context(), []ID{{Sequence: 1}})
+	assert.Nil(t, statuses)
+	assert.ErrorIs(t, err, ErrStorage)
+	var sqliteErr sqlite3.Error
+	assert.ErrorAs(t, err, &sqliteErr)
+}
+
+func TestIntegrityDiagnosticTransferBound(t *testing.T) {
+	// Keep process allocation sampling isolated from this package's parallel tests.
+	storage, _ := newTestStore(t)
+	require.NoError(t, storage.validateSchema(t.Context()))
+	name := "extra_" + strings.Repeat("x", 1<<20)
+	_, err := storage.conn.ExecContext(
+		t.Context(),
+		`CREATE TABLE "`+name+`" (x INTEGER CHECK(x>0))`,
+	)
+	require.NoError(t, err)
+	require.ErrorIs(t, storage.validateSchema(t.Context()), ErrUnsupported)
+	_, err = storage.conn.ExecContext(t.Context(), "PRAGMA ignore_check_constraints=ON")
+	require.NoError(t, err)
+	_, err = storage.conn.ExecContext(t.Context(), `INSERT INTO "`+name+`" VALUES(-1)`)
+	require.NoError(t, err)
+	_, err = storage.conn.ExecContext(t.Context(), "PRAGMA ignore_check_constraints=OFF")
+	require.NoError(t, err)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	err = storage.validateSchema(t.Context())
+	runtime.ReadMemStats(&after)
+	assert.ErrorIs(t, err, ErrStorage)
+	allocated := after.TotalAlloc - before.TotalAlloc
+	t.Logf("integrity diagnostic Go allocation bytes=%d", allocated)
+	assert.Less(t, allocated, uint64(256<<10))
+}
+
+func TestSetupSQLCancellationCategory(t *testing.T) {
+	for _, operation := range []string{"configure", "read-settings", "schema", "receipt-producer"} {
+		t.Run(operation, func(t *testing.T) {
+			config := testConfig(t)
+			directory := offlineFixture(t, config)
+			opened, err := openOffline(t.Context(), directory)
+			require.NoError(t, err)
+			defer func() { assert.NoError(t, opened.close()) }()
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			matched := 0
+			require.NoError(t, opened.storage.conn.Raw(func(raw any) error {
+				connection, ok := raw.(*sqlite3.SQLiteConn)
+				require.True(t, ok)
+				connection.RegisterAuthorizer(func(action int, name, column, _ string) int {
+					if operation == "receipt-producer" {
+						if action != sqlite3.SQLITE_READ || name != "producers" || column != "has_retirement" {
+							return sqlite3.SQLITE_OK
+						}
+						matched++
+						if matched != 2 {
+							return sqlite3.SQLITE_OK
+						}
+					} else {
+						matched++
+					}
+					cancel()
+					return sqlite3.SQLITE_OK
+				})
+				return nil
+			}))
+			switch operation {
+			case "configure":
+				err = opened.storage.configure(
+					ctx,
+					filepath.Join(directory, "queue.sqlite3"),
+					config,
+					false,
+				)
+			case "read-settings":
+				_, err = opened.storage.readSettings(ctx)
+			case "schema":
+				err = opened.storage.validateSchema(ctx)
+			case "receipt-producer":
+				_, err = opened.storage.validateLogicalState(ctx, opened.metadata)
+			}
+			require.Positive(t, matched)
+			assert.ErrorIs(t, err, context.Canceled)
+			assert.NotErrorIs(t, err, ErrStorage)
 		})
 	}
 }

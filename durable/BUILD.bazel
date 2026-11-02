@@ -4,6 +4,9 @@ go_library(
     name = "durable",
     srcs = [
         "ack.go",
+        "inspect.go",
+        "maintain.go",
+        "durability.go",
         "delivery.go",
         "accounting.go",
         "admission.go",
@@ -39,6 +42,7 @@ go_test(
     name = "durable_test",
     srcs = [
         "delivery_test.go",
+        "offline_test.go",
         "accounting_test.go",
         "session_test.go",
         "group_test.go",

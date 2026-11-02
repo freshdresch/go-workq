@@ -26,6 +26,18 @@ func acquireDirectoryObserved(
 	path string,
 	observer startupObserver,
 ) (_ *directoryOwner, err error) {
+	return acquireDirectoryMode(path, observer, true)
+}
+
+func acquireExistingDirectory(path string) (*directoryOwner, error) {
+	return acquireDirectoryMode(path, nil, false)
+}
+
+func acquireDirectoryMode(
+	path string,
+	observer startupObserver,
+	create bool,
+) (_ *directoryOwner, err error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
@@ -35,9 +47,11 @@ func acquireDirectoryObserved(
 		return nil, err
 	}
 	canonical := filepath.Join(parentPath, filepath.Base(absolute))
-	if err := os.Mkdir(canonical, 0700); err != nil {
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
+	if create {
+		if err := os.Mkdir(canonical, 0700); err != nil {
+			if !errors.Is(err, os.ErrExist) {
+				return nil, err
+			}
 		}
 	}
 	canonical, err = filepath.EvalSymlinks(canonical)
@@ -61,15 +75,15 @@ func acquireDirectoryObserved(
 	if err != nil {
 		return nil, err
 	}
-	owner.lock, err = openOwnedFile(
-		filepath.Join(canonical, "LOCK"),
-		syscall.O_RDWR|syscall.O_CREAT|syscall.O_EXCL,
-		0600,
-	)
-	if err == nil {
+	lockFlags := syscall.O_RDWR
+	if create {
+		lockFlags |= syscall.O_CREAT | syscall.O_EXCL
+	}
+	owner.lock, err = openOwnedFile(filepath.Join(canonical, "LOCK"), lockFlags, 0600)
+	if create && err == nil {
 		owner.lockCreated = true
 	}
-	if errors.Is(err, syscall.EEXIST) {
+	if create && errors.Is(err, syscall.EEXIST) {
 		owner.lock, err = openOwnedFile(filepath.Join(canonical, "LOCK"), syscall.O_RDWR, 0)
 	}
 	if err != nil {

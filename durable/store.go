@@ -44,6 +44,17 @@ func connectStore(ctx context.Context, path string, config Config, create bool) 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	storage, err := openStoreConnection(ctx, path, create)
+	if err != nil {
+		return nil, err
+	}
+	if err := storage.configure(ctx, path, config, create); err != nil {
+		return nil, errors.Join(err, classifySQLError(storage.close()))
+	}
+	return storage, nil
+}
+
+func openStoreConnection(ctx context.Context, path string, create bool) (*store, error) {
 	mode := "rw"
 	if create {
 		mode = "rwc"
@@ -53,19 +64,18 @@ func connectStore(ctx context.Context, path string, config Config, create bool) 
 	location.RawQuery = query.Encode()
 	db, err := sql.Open("sqlite3", location.String())
 	if err != nil {
-		return nil, fmt.Errorf("open SQLite: %w: %w", ErrStorage, err)
+		return nil, fmt.Errorf("open SQLite: %w", classifySQLError(err))
 	}
 	db.SetMaxOpenConns(1)
 	db.SetMaxIdleConns(1)
 	conn, err := db.Conn(ctx)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("retain connection: %w: %w", ErrStorage, err), db.Close())
+		return nil, errors.Join(
+			fmt.Errorf("retain connection: %w", classifySQLError(err)),
+			classifySQLError(db.Close()),
+		)
 	}
-	storage := &store{db: db, conn: conn}
-	if err := storage.configure(ctx, path, config, create); err != nil {
-		return nil, errors.Join(err, storage.close())
-	}
-	return storage, nil
+	return &store{db: db, conn: conn}, nil
 }
 
 func (s *store) close() error {
@@ -78,13 +88,13 @@ func (s *store) configure(ctx context.Context, path string, config Config, creat
 			"PRAGMA page_size=4096", "PRAGMA auto_vacuum=INCREMENTAL",
 		} {
 			if _, err := s.conn.ExecContext(ctx, statement); err != nil {
-				return fmt.Errorf("initialize SQLite: %w: %w", ErrStorage, err)
+				return fmt.Errorf("initialize SQLite: %w", classifySQLError(err))
 			}
 		}
 	}
 	var journal string
 	if err := s.conn.QueryRowContext(ctx, "PRAGMA journal_mode=WAL").Scan(&journal); err != nil {
-		return fmt.Errorf("enable WAL: %w: %w", ErrStorage, err)
+		return fmt.Errorf("enable WAL: %w", classifySQLError(err))
 	}
 	if journal != "wal" {
 		return fmt.Errorf("journal mode %q: %w", journal, ErrUnsupported)
@@ -107,11 +117,11 @@ func (s *store) configure(ctx context.Context, path string, config Config, creat
 		// Names are fixed above and values passed bounded integer validation.
 		statement := "PRAGMA " + setting.name + "=" + strconv.FormatInt(setting.value, 10)
 		if _, err := s.conn.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("set %s: %w: %w", setting.name, ErrStorage, err)
+			return fmt.Errorf("set %s: %w", setting.name, classifySQLError(err))
 		}
 		var actual int64
 		if err := s.conn.QueryRowContext(ctx, "PRAGMA "+setting.name).Scan(&actual); err != nil {
-			return fmt.Errorf("read %s: %w: %w", setting.name, ErrStorage, err)
+			return fmt.Errorf("read %s: %w", setting.name, classifySQLError(err))
 		}
 		if actual != setting.value {
 			if setting.name == "max_page_count" && actual > setting.value {
@@ -133,7 +143,7 @@ func (s *store) configure(ctx context.Context, path string, config Config, creat
 	}
 	var pages int64
 	if err := s.conn.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pages); err != nil {
-		return fmt.Errorf("read page count: %w: %w", ErrStorage, err)
+		return fmt.Errorf("read page count: %w", classifySQLError(err))
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -149,7 +159,7 @@ func (s *store) readSettings(ctx context.Context) (sqliteSettings, error) {
 	var settings sqliteSettings
 	row := s.conn.QueryRowContext(ctx, "PRAGMA journal_mode")
 	if err := row.Scan(&settings.JournalMode); err != nil {
-		return sqliteSettings{}, fmt.Errorf("read journal mode: %w: %w", ErrStorage, err)
+		return sqliteSettings{}, fmt.Errorf("read journal mode: %w", classifySQLError(err))
 	}
 	fields := []struct {
 		name  string
@@ -163,7 +173,7 @@ func (s *store) readSettings(ctx context.Context) (sqliteSettings, error) {
 	}
 	for _, field := range fields {
 		if err := s.conn.QueryRowContext(ctx, "PRAGMA "+field.name).Scan(field.value); err != nil {
-			return sqliteSettings{}, fmt.Errorf("read %s: %w: %w", field.name, ErrStorage, err)
+			return sqliteSettings{}, fmt.Errorf("read %s: %w", field.name, classifySQLError(err))
 		}
 	}
 	return settings, nil
@@ -183,4 +193,17 @@ func (s *store) autoCommit() (bool, error) {
 		return false, fmt.Errorf("transaction state: %w: %w", ErrStorage, err)
 	}
 	return autoCommit, nil
+}
+
+// classifySQLError classifies one fresh SQL failure before independent errors are joined.
+// The driver returns context sentinels for canceled calls. Never infer cancellation
+// from ctx.Err(), which could hide an independent storage failure.
+func classifySQLError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return errors.Join(ErrStorage, err)
 }

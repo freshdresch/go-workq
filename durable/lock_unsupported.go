@@ -21,3 +21,5 @@ func (o *directoryOwner) verify() error                { return ErrUnsupported }
 func (o *directoryOwner) close() error                 { return nil }
 
 func verifyOwnedDescriptor(*os.File, string) error { return ErrUnsupported }
+
+func acquireExistingDirectory(string) (*directoryOwner, error) { return nil, ErrUnsupported }

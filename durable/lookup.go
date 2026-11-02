@@ -40,7 +40,7 @@ func (s *store) lookup(ctx context.Context, ids []ID) ([]Status, error) {
 	for index, id := range ids {
 		status, err := s.lookupID(ctx, id)
 		if err != nil {
-			return nil, errors.Join(ErrStorage, err)
+			return nil, classifySQLError(err)
 		}
 		statuses[index] = status
 	}

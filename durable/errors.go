@@ -1,6 +1,9 @@
 package durable
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	// ErrInvalidInput identifies an invalid finite argument or configuration.
@@ -30,3 +33,35 @@ var (
 	// ErrExhausted identifies an identity counter that cannot advance without wrapping.
 	ErrExhausted = errors.New("identity exhausted")
 )
+
+// MaintenanceError preserves bounded observations from an incomplete offline checkpoint.
+// It matches ErrMaintenanceRequired. WALBytes requires WALValid, and checkpoint
+// progress fields require Checkpoint.Valid. Duration records the attempt even when
+// progress is unavailable. It does not sample main-file size or page/free counts.
+type MaintenanceError struct {
+	Operation  DiagnosticOperation
+	Reason     MaintenanceReason
+	WALValid   bool
+	WALBytes   Bytes
+	Checkpoint CheckpointStats
+}
+
+// Error formats only bounded scalar observations, without retaining error history.
+func (e *MaintenanceError) Error() string {
+	return fmt.Sprintf(
+		"maintenance required: %s: %s: WAL=%d WAL-valid=%t "+
+			"checkpoint-valid=%t busy=%d frames=%d completed=%d duration=%s",
+		e.Operation,
+		e.Reason,
+		e.WALBytes,
+		e.WALValid,
+		e.Checkpoint.Valid,
+		e.Checkpoint.Busy,
+		e.Checkpoint.Frames,
+		e.Checkpoint.Completed,
+		e.Checkpoint.Duration,
+	)
+}
+
+// Unwrap identifies maintenance pressure without implying storage failure.
+func (e *MaintenanceError) Unwrap() error { return ErrMaintenanceRequired }

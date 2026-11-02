@@ -207,9 +207,7 @@ func (q *Queue) truncateWAL(ctx context.Context) error {
 	q.snapshot.Checkpoint = stats
 	q.mu.Unlock()
 	if err != nil {
-		var sqliteErr sqlite3.Error
-		if errors.As(err, &sqliteErr) &&
-			(sqliteErr.Code == sqlite3.ErrBusy || sqliteErr.Code == sqlite3.ErrLocked) {
+		if sqliteCheckpointBlocked(err) {
 			q.mu.Lock()
 			result := q.enterMaintenanceLocked(CheckpointBlocked)
 			q.mu.Unlock()
@@ -240,4 +238,10 @@ func (q *Queue) shutdownBarrier(ctx context.Context) (err error) {
 		return fmt.Errorf("shutdown checkpoint: %w", err)
 	}
 	return q.sampleStorage(ctx)
+}
+
+func sqliteCheckpointBlocked(err error) bool {
+	var sqliteErr sqlite3.Error
+	return errors.As(err, &sqliteErr) &&
+		(sqliteErr.Code == sqlite3.ErrBusy || sqliteErr.Code == sqlite3.ErrLocked)
 }

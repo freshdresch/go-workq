@@ -8,7 +8,8 @@ import (
 )
 
 // StoreInfo describes the last observed committed store and physical sizes.
-// Disk values are valid only when Snapshot.Disk.Valid is true.
+// Disk values in Snapshot are valid only when Snapshot.Disk.Valid is true.
+// A successful Inspection always contains valid disk observations.
 type StoreInfo struct {
 	UUID          UUID
 	Epoch         uint64
