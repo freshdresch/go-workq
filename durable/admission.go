@@ -5,6 +5,7 @@ import (
 	"errors"
 	"math"
 	"sync"
+	"time"
 
 	"github.com/freshdresch/go-data-structures/workq"
 )
@@ -36,6 +37,7 @@ type command struct {
 	abandoned  bool
 	sequence   uint64
 	charge     Bytes
+	handedAt   time.Time
 	submit     bool
 	kind       commandKind
 	tokens     []Token
@@ -53,6 +55,12 @@ type command struct {
 // Queue owns a validated store and one coordinator. It is safe for concurrent use.
 // Its zero value is invalid. Call Close or Abort and Wait to release ownership.
 type Queue struct {
+	snapshot         Snapshot
+	maintenance      bool
+	faulted          bool
+	exhausted        bool
+	walEnvelope      Bytes
+	walObserver      walObserver
 	opened           *validatedStore
 	config           Config
 	mu               sync.Mutex
@@ -82,6 +90,7 @@ type Queue struct {
 }
 
 func (q *Queue) signalLocked() {
+	q.cacheStateLocked()
 	close(q.changed)
 	q.changed = make(chan struct{})
 }
@@ -117,6 +126,7 @@ func (q *Queue) reserve(
 	defer func() {
 		if waiting {
 			pool.waiters--
+			q.signalLocked()
 		}
 		q.mu.Unlock()
 	}()
@@ -138,6 +148,7 @@ func (q *Queue) reserve(
 				}
 				*slot = command{used: true, charge: charge, submit: submit}
 				pool.retained += charge
+				q.cacheStateLocked()
 				return slot, nil
 			}
 		}
@@ -177,6 +188,7 @@ func (q *Queue) handoff(ctx context.Context, slot *command) error {
 	q.lastSequence++
 	slot.sequence = q.lastSequence
 	slot.handed = true
+	slot.handedAt = time.Now()
 	q.signalLocked()
 	return nil
 }
@@ -196,6 +208,9 @@ func (q *Queue) await(
 		}
 		if err := cancellation(ctx); err != nil {
 			slot.abandoned = true
+			if slot.mutation() {
+				q.addCounterLocked(&q.snapshot.Outcomes.UnknownResponses, 1)
+			}
 			return CommitResult{Decision: Unknown}, nil, err
 		}
 		changed := q.changed

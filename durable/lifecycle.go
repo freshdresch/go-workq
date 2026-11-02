@@ -3,9 +3,6 @@ package durable
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/freshdresch/go-data-structures/workq"
 )
@@ -38,6 +35,12 @@ func Open(ctx context.Context, directory string, config Config) (*Queue, error) 
 	if err := cancellation(ctx); err != nil {
 		return nil, errors.Join(err, opened.close())
 	}
+	queue.walEnvelope = walEnvelopeBytes
+	queue.snapshot.Store = StoreInfo{UUID: opened.metadata.uuid, Epoch: opened.metadata.epoch,
+		Policy: config.Policy, Durability: config.Durability, Counts: opened.metadata.counts}
+	queue.snapshot.Validation = opened.validation
+	queue.snapshot.Disk.Cache = config.Runtime.SQLite.Cache / 1024 * 1024
+	queue.snapshot.Disk.Mmap = config.Runtime.SQLite.Mmap
 	go queue.coordinate()
 	return queue, nil
 }
@@ -58,7 +61,9 @@ func (q *Queue) cutoffLocked() {
 	q.stopDeliveryLocked()
 	q.closing = true
 	q.admissionStopped = true
-	close(q.stopping)
+	q.cacheCauseLocked()
+	q.cacheStateLocked()
+	q.publishStoppingLocked()
 	q.signalLocked()
 }
 
@@ -74,6 +79,8 @@ func (q *Queue) Abort(cause error) {
 	if cause == nil {
 		cause = ErrStopped
 	}
+	detail := describeCause(cause)
+	detail.Operation = AbortOperation
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	select {
@@ -83,6 +90,9 @@ func (q *Queue) Abort(cause error) {
 	}
 	if q.terminal == nil {
 		q.terminal = cause
+		q.snapshot.Cause = detail
+		q.faulted = detail.Storage
+		q.exhausted = detail.Exhausted
 	}
 	q.aborting = true
 	q.cutoffLocked()
@@ -115,26 +125,10 @@ func (q *Queue) Close(ctx context.Context) error {
 	}
 }
 
-func (q *Queue) shutdownBarrier(ctx context.Context) error {
-	if err := q.opened.storage.selectDurability(ctx, Synchronized); err != nil {
-		return errors.Join(ErrStorage, err)
+func (q *Queue) publishStoppingLocked() {
+	select {
+	case <-q.stopping:
+	default:
+		close(q.stopping)
 	}
-	var busy, frames, checkpointed int64
-	err := q.opened.storage.conn.QueryRowContext(ctx,
-		"PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &frames, &checkpointed)
-	if err != nil {
-		return errors.Join(ErrStorage, err)
-	}
-	if busy != 0 || frames != checkpointed {
-		return fmt.Errorf("shutdown checkpoint busy=%d frames=%d completed=%d: %w",
-			busy, frames, checkpointed, ErrStorage)
-	}
-	info, err := os.Stat(filepath.Join(q.opened.owner.path, "queue.sqlite3-wal"))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return errors.Join(ErrStorage, err)
-	}
-	if err == nil && info.Size() != 0 {
-		return fmt.Errorf("shutdown WAL: %w", ErrStorage)
-	}
-	return nil
 }

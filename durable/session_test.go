@@ -495,8 +495,9 @@ func (g storageFaultGate) BeforeExecute() {
 }
 
 func TestStorageFaultRejectsQueuedCommandsWithoutErrorGrowth(t *testing.T) {
-	for _, abort := range []bool{false, true} {
-		t.Run(strconv.FormatBool(abort), func(t *testing.T) {
+	for _, mode := range []string{"none", "ordinary", "storage"} {
+		t.Run(mode, func(t *testing.T) {
+			abort := mode != "none"
 			t.Parallel()
 			config := testConfig(t)
 			directory := filepath.Join(t.TempDir(), "queue")
@@ -541,8 +542,12 @@ func TestStorageFaultRejectsQueuedCommandsWithoutErrorGrowth(t *testing.T) {
 			assert.Equal(t, Unknown, result.Decision)
 			assert.ErrorIs(t, err, context.Canceled)
 			cause := errors.New("operator stopped")
+			abortCause := cause
+			if mode == "storage" {
+				abortCause = errors.Join(ErrStorage, cause)
+			}
 			if abort {
-				queue.Abort(cause)
+				queue.Abort(abortCause)
 			}
 			close(release)
 			require.NoError(t, <-setup)
@@ -561,6 +566,8 @@ func TestStorageFaultRejectsQueuedCommandsWithoutErrorGrowth(t *testing.T) {
 			}
 			terminal := queue.Wait()
 			assert.ErrorIs(t, terminal, ErrStorage)
+			require.ErrorAs(t, terminal, &sqliteErr)
+			assert.Equal(t, sqlite3.ErrFull, sqliteErr.Code)
 			assert.NotErrorIs(t, terminal, ErrStopped)
 			if abort {
 				assert.ErrorIs(t, terminal, cause)
@@ -569,7 +576,7 @@ func TestStorageFaultRejectsQueuedCommandsWithoutErrorGrowth(t *testing.T) {
 				abort, queued, len(terminal.Error()))
 			assert.Less(t, len(terminal.Error()), 4096)
 			assert.LessOrEqual(t, len(terminal.Error()),
-				len(failed.err.Error())+len(cause.Error())+1)
+				len(failed.err.Error())+len(abortCause.Error())+1)
 			assert.ErrorIs(t, queue.Close(t.Context()), ErrStorage)
 			queue.mu.Lock()
 			assert.Zero(t, queue.ordinary.retained)

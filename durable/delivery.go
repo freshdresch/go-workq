@@ -51,6 +51,7 @@ func (q *Queue) clearClaimLocked(index int) {
 	}
 	q.deliveryRetained -= slot.charge
 	*slot = claim{}
+	q.cacheStateLocked()
 }
 
 func (q *Queue) claimLocked(id ID) int {
@@ -114,6 +115,7 @@ func (q *Queue) receiveObserved(
 				slot.delivery.Codec = ""
 			}
 			if len(deliveries) > 0 {
+				q.cacheStateLocked()
 				q.mu.Unlock()
 				if observer != nil {
 					observer.Acquired()
@@ -270,6 +272,7 @@ func (q *Queue) loadDelivery(ctx context.Context, index int, id ID) error {
 	token := encodeToken(q.opened.metadata.uuid, q.opened.metadata.epoch, id, attempt)
 	q.claims[index] = claim{used: true, charge: charge, delivery: Delivery{ID: id, Token: token}}
 	q.deliveryRetained += charge
+	q.cacheStateLocked()
 	observer := q.deliveryObserver
 	q.mu.Unlock()
 	if observer != nil {

@@ -4,11 +4,26 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 )
 
 // cleanupTurn either removes eligible receipts or clears an empty marker. Its
 // fixed key buffer belongs to the fixed queue allowance, not to a caller pool.
 func (q *Queue) cleanupTurn(ctx context.Context) error {
+	if err := q.beforeWrite(ctx); err != nil {
+		return err
+	}
+	defer func() {
+		if err := q.sampleStorage(ctx); err != nil {
+			detail := describeCause(err)
+			if !detail.Storage {
+				return
+			}
+			q.mu.Lock()
+			q.faultLocked(err, detail)
+			q.mu.Unlock()
+		}
+	}()
 	storage := q.opened.storage
 	if _, err := storage.conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return errors.Join(ErrStorage, err)
@@ -22,10 +37,20 @@ func (q *Queue) cleanupTurn(ctx context.Context) error {
 		_, failure := q.rollbackSubmit(ctx, errors.Join(ErrStorage, err))
 		return failure
 	}
+	commitStarted := time.Now()
 	if _, err := storage.conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return errors.Join(ErrStorage, err)
 	}
+	previous := q.opened.metadata.counts
 	q.opened.metadata = metadata
+	q.mu.Lock()
+	q.snapshot.Store.Counts = metadata.counts
+	q.snapshot.Cleanup = CleanupStats{Deleted: previous.Receipts - metadata.counts.Receipts,
+		MarkerCleared: previous.CleanupMarkers > metadata.counts.CleanupMarkers}
+	q.addCounterLocked(&q.snapshot.Outcomes.Commits, 1)
+	q.addLatencyLocked(&q.snapshot.CommitLatency, time.Since(commitStarted))
+	q.addCounterLocked(&q.snapshot.Outcomes.CleanupTurns, 1)
+	q.mu.Unlock()
 	return nil
 }
 

@@ -41,8 +41,13 @@ func (c *command) work() (Count, Bytes) {
 // collectGroupLocked holds references to admitted storage. It neither copies
 // public batches nor releases reservations while callers can abandon results.
 func (q *Queue) collectGroupLocked(pool *admissionPool, first *command) commandGroup {
+	started := time.Now()
 	limits := q.config.Runtime.Group
 	group := commandGroup{commands: make([]groupedCommand, limits.Commands)}
+	defer func() {
+		q.snapshot.CurrentGroup = GroupStats{Commands: Count(group.count), Operations: group.operations,
+			Encoded: group.encoded, CollectionDelay: time.Since(started)}
+	}()
 	operations, encoded := first.work()
 	group.commands[0] = groupedCommand{pool: pool, slot: first}
 	group.count, group.operations, group.encoded = 1, operations, encoded
@@ -152,11 +157,26 @@ func (g *commandGroup) fail(attempted int, result CommitResult, err error) {
 }
 
 func (q *Queue) executeGroup(ctx context.Context, group *commandGroup) error {
+	if err := q.beforeWrite(ctx); err != nil {
+		group.fail(0, CommitResult{Decision: NotApplied}, err)
+		return err
+	}
 	for index := range group.count {
 		if observer := group.commands[index].slot.observer; observer != nil {
 			observer.BeforeExecute()
 		}
 	}
+	defer func() {
+		// Observe even failed groups. A fault remains terminal regardless of this sample.
+		if err := q.sampleStorage(ctx); err != nil {
+			detail := describeCause(err)
+			q.mu.Lock()
+			if detail.Storage {
+				q.faultLocked(err, detail)
+			}
+			q.mu.Unlock()
+		}
+	}()
 	storage := q.opened.storage
 	if _, err := storage.conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		err = errors.Join(ErrStorage, err)
@@ -184,6 +204,7 @@ func (q *Queue) executeGroup(ctx context.Context, group *commandGroup) error {
 		group.fail(group.count, result, failure)
 		return failure
 	}
+	commitStarted := time.Now()
 	if _, err := storage.conn.ExecContext(ctx, "COMMIT"); err != nil {
 		err = errors.Join(ErrStorage, err)
 		group.fail(group.count, CommitResult{Decision: Unknown}, err)
@@ -191,6 +212,9 @@ func (q *Queue) executeGroup(ctx context.Context, group *commandGroup) error {
 	}
 	q.opened.metadata = metadata
 	q.mu.Lock()
+	q.snapshot.Store.Counts = metadata.counts
+	q.addCounterLocked(&q.snapshot.Outcomes.Commits, 1)
+	q.addLatencyLocked(&q.snapshot.CommitLatency, time.Since(commitStarted))
 	for index := range group.count {
 		command := &group.commands[index]
 		if command.err != nil || command.slot.kind != ackCommand {
