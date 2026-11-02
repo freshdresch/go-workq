@@ -26,24 +26,26 @@ const (
 	lookupCommand commandKind = iota
 	ackCommand
 	releaseCommand
+	retireCommand
 )
 
 type command struct {
-	used      bool
-	handed    bool
-	finished  bool
-	abandoned bool
-	sequence  uint64
-	charge    Bytes
-	submit    bool
-	kind      commandKind
-	tokens    []Token
-	token     Token
-	entries   []Entry
-	ids       []ID
-	result    CommitResult
-	statuses  []Status
-	err       error
+	used       bool
+	handed     bool
+	finished   bool
+	abandoned  bool
+	sequence   uint64
+	charge     Bytes
+	submit     bool
+	kind       commandKind
+	tokens     []Token
+	token      Token
+	retirement ID
+	entries    []Entry
+	ids        []ID
+	result     CommitResult
+	statuses   []Status
+	err        error
 	// A private per-call gate lets tests stop execution after ownership transferred.
 	observer commandObserver
 }

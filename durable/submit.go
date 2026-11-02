@@ -111,35 +111,6 @@ func copyEntries(entries []Entry, payloadBytes int) []Entry {
 	return copied
 }
 
-func (q *Queue) executeSubmit(ctx context.Context, entries []Entry) (CommitResult, error) {
-	storage := q.opened.storage
-	if _, err := storage.conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return CommitResult{Decision: NotApplied}, errors.Join(ErrStorage, err)
-	}
-	metadata, fresh, err := q.validateStoredSubmit(ctx, entries)
-	if err != nil {
-		return q.rollbackSubmit(ctx, err)
-	}
-	for index, entry := range entries {
-		if !fresh[index] {
-			continue
-		}
-		order := metadata.lastOrder - uint64(countFreshAfter(fresh, index))
-		if err := storage.insertEntry(ctx, entry, order); err != nil {
-			return q.rollbackSubmit(ctx, errors.Join(ErrStorage, err))
-		}
-	}
-	if err := storage.writeSubmitMetadata(ctx, metadata); err != nil {
-		return q.rollbackSubmit(ctx, errors.Join(ErrStorage, err))
-	}
-	if _, err := storage.conn.ExecContext(ctx, "COMMIT"); err != nil {
-		// AutoCommit cannot prove a failed COMMIT did not persist.
-		return CommitResult{Decision: Unknown}, errors.Join(ErrStorage, err)
-	}
-	q.opened.metadata = metadata
-	return CommitResult{Decision: Applied}, nil
-}
-
 func countFreshAfter(fresh []bool, index int) int {
 	count := 0
 	for _, value := range fresh[index+1:] {
@@ -153,8 +124,8 @@ func countFreshAfter(fresh []bool, index int) int {
 func (q *Queue) validateStoredSubmit(
 	ctx context.Context,
 	entries []Entry,
+	metadata storeMetadata,
 ) (storeMetadata, []bool, error) {
-	metadata := q.opened.metadata
 	fresh := make([]bool, len(entries))
 	producers := make([][16]byte, 0, len(entries))
 	for index, entry := range entries {
@@ -249,6 +220,8 @@ func (s *store) writeSubmitMetadata(ctx context.Context, metadata storeMetadata)
 		{metaPendingPayload, uint64(metadata.counts.PendingPayload)},
 		{metaReceipts, uint64(metadata.counts.Receipts)},
 		{metaProducers, uint64(metadata.counts.Producers)},
+		{metaRetiredProducers, uint64(metadata.counts.RetiredProducers)},
+		{metaCleanupMarkers, uint64(metadata.counts.CleanupMarkers)},
 	}
 	for _, value := range values {
 		encoded := encodeUint64(value.value)

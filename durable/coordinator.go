@@ -6,12 +6,16 @@ import (
 )
 
 func (q *Queue) nextLocked() (*admissionPool, *command) {
+	return q.nextAfterLocked(0)
+}
+
+func (q *Queue) nextAfterLocked(after uint64) (*admissionPool, *command) {
 	var selected *command
 	var selectedPool *admissionPool
 	for _, pool := range []*admissionPool{&q.ordinary, &q.progress} {
 		for index := range pool.slots {
 			slot := &pool.slots[index]
-			if !slot.used || !slot.handed || slot.finished {
+			if !slot.used || !slot.handed || slot.finished || slot.sequence <= after {
 				continue
 			}
 			if selected == nil || slot.sequence < selected.sequence {
@@ -26,6 +30,7 @@ func (q *Queue) coordinate() {
 	// This is the session execution lifetime, independent of every caller context.
 	ctx := context.Background()
 	q.mu.Lock()
+	var commandTurns Count
 	for {
 		if q.deliveryDirty && !q.deliveryStopped {
 			q.mu.Unlock()
@@ -41,6 +46,18 @@ func (q *Queue) coordinate() {
 			q.closeDeliveryLocked()
 		}
 		pool, slot := q.nextLocked()
+		cleanupDue := q.opened.metadata.counts.CleanupMarkers > 0 &&
+			(slot == nil || commandTurns >= q.config.Runtime.Maintenance.MaxCommandTurns)
+		if cleanupDue && !q.aborting && !q.closing {
+			q.mu.Unlock()
+			err := q.cleanupTurn(ctx)
+			q.mu.Lock()
+			commandTurns = 0
+			if err != nil {
+				q.faultLocked(err)
+			}
+			continue
+		}
 		if slot == nil {
 			if q.closing {
 				break
@@ -54,6 +71,28 @@ func (q *Queue) coordinate() {
 			q.mu.Lock()
 			continue
 		}
+		if slot.mutation() && !q.aborting {
+			group := q.collectGroupLocked(pool, slot)
+			if !q.aborting {
+				q.mu.Unlock()
+				err := q.executeGroup(ctx, &group)
+				q.mu.Lock()
+				if err != nil {
+					q.faultLocked(err)
+				}
+				q.pending = q.opened.metadata.counts.PendingItems
+				for index := range group.count {
+					command := &group.commands[index]
+					if command.err == nil {
+						q.deliveryDirty = true
+						q.scanWrapped = false
+					}
+					q.finishLocked(command.pool, command.slot, command.result, nil, command.err)
+				}
+				commandTurns = min(commandTurns+1, q.config.Runtime.Maintenance.MaxCommandTurns)
+				continue
+			}
+		}
 		reject := q.aborting
 		cause := errors.Join(ErrStopped, q.terminal)
 		q.mu.Unlock()
@@ -66,42 +105,22 @@ func (q *Queue) coordinate() {
 			if slot.observer != nil {
 				slot.observer.BeforeExecute()
 			}
-			if slot.submit {
-				result, err = q.executeSubmit(ctx, slot.entries)
+			if slot.kind == releaseCommand {
+				err = q.executeRelease(slot.token)
 			} else {
-				switch slot.kind {
-				case ackCommand:
-					result, err = q.executeAck(ctx, slot.tokens)
-				case releaseCommand:
-					err = q.executeRelease(slot.token)
-				default:
-					statuses, err = q.opened.storage.lookup(ctx, slot.ids)
-				}
+				statuses, err = q.opened.storage.lookup(ctx, slot.ids)
 			}
 		}
 		q.mu.Lock()
-		// Rejections carry the established cause, not a new execution failure.
 		if !reject && errors.Is(err, ErrStorage) {
-			q.terminal = errors.Join(q.terminal, err)
-			q.aborting = true
-			q.cutoffLocked()
+			q.faultLocked(err)
 		}
-		q.pending = q.opened.metadata.counts.PendingItems
-		if err == nil && (slot.submit || slot.kind == ackCommand || slot.kind == releaseCommand) {
+		if err == nil && slot.kind == releaseCommand {
 			q.deliveryDirty = true
 			q.scanWrapped = false
 		}
-		slot.tokens = nil
-		slot.entries = nil
-		slot.ids = nil
-		slot.observer = nil
-		slot.result, slot.statuses, slot.err = result, statuses, err
-		slot.finished = true
-		if slot.abandoned {
-			q.clearLocked(pool, slot)
-		} else {
-			q.signalLocked()
-		}
+		q.finishLocked(pool, slot, result, statuses, err)
+		commandTurns = min(commandTurns+1, q.config.Runtime.Maintenance.MaxCommandTurns)
 	}
 	q.closeDeliveryLocked()
 	for index := range q.claims {
@@ -131,4 +150,27 @@ func (q *Queue) rollbackSubmit(ctx context.Context, cause error) (CommitResult, 
 		return CommitResult{Decision: NotApplied}, err
 	}
 	return CommitResult{Decision: Unknown}, errors.Join(ErrStorage, err)
+}
+
+func (q *Queue) faultLocked(err error) {
+	q.terminal = errors.Join(q.terminal, err)
+	q.aborting = true
+	q.cutoffLocked()
+}
+
+func (q *Queue) finishLocked(
+	pool *admissionPool,
+	slot *command,
+	result CommitResult,
+	statuses []Status,
+	err error,
+) {
+	slot.tokens, slot.entries, slot.ids, slot.observer = nil, nil, nil, nil
+	slot.result, slot.statuses, slot.err = result, statuses, err
+	slot.finished = true
+	if slot.abandoned {
+		q.clearLocked(pool, slot)
+	} else {
+		q.signalLocked()
+	}
 }

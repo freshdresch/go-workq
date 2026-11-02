@@ -97,30 +97,39 @@ func (q *Queue) executeRelease(token Token) error {
 	return nil
 }
 
-func (q *Queue) validateAck(ctx context.Context, tokens []Token) (StoreCounts, error) {
-	counts := q.opened.metadata.counts
+func (q *Queue) validateAck(
+	ctx context.Context,
+	tokens []Token,
+	counts StoreCounts,
+) (StoreCounts, error) {
 	for _, token := range tokens {
 		id, err := q.tokenID(token)
 		if err != nil {
 			return StoreCounts{}, err
 		}
-		q.mu.Lock()
-		current := q.currentClaimLocked(id, token) >= 0
-		q.mu.Unlock()
-		if !current {
-			var stored []byte
-			err := q.opened.storage.conn.QueryRowContext(ctx,
-				"SELECT ack_token FROM receipts WHERE id=? AND state=1", token.bytes[24:48]).Scan(&stored)
-			if errors.Is(err, sql.ErrNoRows) {
-				return StoreCounts{}, ErrStaleToken
-			}
-			if err != nil {
-				return StoreCounts{}, errors.Join(ErrStorage, err)
-			}
+		// SQL includes earlier acknowledgments in this group, while claims stay
+		// unchanged until the outer commit establishes their completion.
+		var state int
+		var stored []byte
+		err = q.opened.storage.conn.QueryRowContext(ctx,
+			"SELECT state,ack_token FROM receipts WHERE id=?", token.bytes[24:48]).Scan(&state, &stored)
+		if errors.Is(err, sql.ErrNoRows) {
+			return StoreCounts{}, ErrStaleToken
+		}
+		if err != nil {
+			return StoreCounts{}, errors.Join(ErrStorage, err)
+		}
+		if state == 1 {
 			if !bytes.Equal(stored, token.bytes[:]) {
 				return StoreCounts{}, ErrStaleToken
 			}
 			continue
+		}
+		q.mu.Lock()
+		current := q.currentClaimLocked(id, token) >= 0
+		q.mu.Unlock()
+		if !current {
+			return StoreCounts{}, ErrStaleToken
 		}
 		var length int64
 		err = q.opened.storage.conn.QueryRowContext(ctx,
@@ -137,42 +146,17 @@ func (q *Queue) validateAck(ctx context.Context, tokens []Token) (StoreCounts, e
 	return counts, nil
 }
 
-func (q *Queue) executeAck(ctx context.Context, tokens []Token) (CommitResult, error) {
-	storage := q.opened.storage
-	if _, err := storage.conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return CommitResult{Decision: NotApplied}, errors.Join(ErrStorage, err)
-	}
-	counts, err := q.validateAck(ctx, tokens)
-	if err != nil {
-		return q.rollbackSubmit(ctx, err)
-	}
+func (q *Queue) applyAck(ctx context.Context, tokens []Token) error {
 	for _, token := range tokens {
-		if _, err := storage.conn.ExecContext(ctx,
+		if _, err := q.opened.storage.conn.ExecContext(ctx,
 			"UPDATE receipts SET state=1,ack_token=? WHERE id=? AND state=0",
 			token.bytes[:], token.bytes[24:48]); err != nil {
-			return q.rollbackSubmit(ctx, errors.Join(ErrStorage, err))
+			return err
 		}
-		if _, err := storage.conn.ExecContext(ctx,
+		if _, err := q.opened.storage.conn.ExecContext(ctx,
 			"DELETE FROM payloads WHERE id=?", token.bytes[24:48]); err != nil {
-			return q.rollbackSubmit(ctx, errors.Join(ErrStorage, err))
+			return err
 		}
 	}
-	metadata := q.opened.metadata
-	metadata.counts = counts
-	if err := storage.writeSubmitMetadata(ctx, metadata); err != nil {
-		return q.rollbackSubmit(ctx, errors.Join(ErrStorage, err))
-	}
-	if _, err := storage.conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return CommitResult{Decision: Unknown}, errors.Join(ErrStorage, err)
-	}
-	q.opened.metadata = metadata
-	q.mu.Lock()
-	for _, token := range tokens {
-		id, _ := decodeID(token.bytes[24:48])
-		if index := q.currentClaimLocked(id, token); index >= 0 {
-			q.clearClaimLocked(index)
-		}
-	}
-	q.mu.Unlock()
-	return CommitResult{Decision: Applied}, nil
+	return nil
 }
