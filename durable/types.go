@@ -220,3 +220,13 @@ type Status struct {
 	HasRetirement  bool
 	RetiredThrough uint64
 }
+
+// Delivery owns detached application bytes and one attempt. Ack only established
+// success, or stop processing before Release. Application retention after transfer
+// is outside queue memory budgets.
+type Delivery struct {
+	ID      ID
+	Codec   string
+	Payload []byte
+	Token   Token
+}

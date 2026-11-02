@@ -5,6 +5,8 @@ import (
 	"errors"
 	"math"
 	"sync"
+
+	"github.com/freshdresch/go-data-structures/workq"
 )
 
 type admissionPool struct {
@@ -18,6 +20,14 @@ type commandObserver interface {
 	BeforeExecute()
 }
 
+type commandKind uint8
+
+const (
+	lookupCommand commandKind = iota
+	ackCommand
+	releaseCommand
+)
+
 type command struct {
 	used      bool
 	handed    bool
@@ -26,6 +36,9 @@ type command struct {
 	sequence  uint64
 	charge    Bytes
 	submit    bool
+	kind      commandKind
+	tokens    []Token
+	token     Token
 	entries   []Entry
 	ids       []ID
 	result    CommitResult
@@ -51,6 +64,19 @@ type Queue struct {
 	closing          bool
 	aborting         bool
 	terminal         error
+	deliveryStopped  bool
+	deliveryDirty    bool
+	deliveryClosed   bool
+	claims           []claim
+	deliveryQueue    *workq.Queue[int]
+	deliveryRetained Bytes
+	lastAttempt      uint64
+	scanWrapped      bool
+	scanOrder        [8]byte
+	scanID           [24]byte
+	pending          Count
+	receiveSlot      [1]int
+	deliveryObserver deliveryReadObserver
 }
 
 func (q *Queue) signalLocked() {

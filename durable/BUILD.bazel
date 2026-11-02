@@ -3,6 +3,8 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "durable",
     srcs = [
+        "ack.go",
+        "delivery.go",
         "accounting.go",
         "admission.go",
         "coordinator.go",
@@ -22,12 +24,16 @@ go_library(
     ],
     importpath = "github.com/freshdresch/go-data-structures/workq/durable",
     visibility = ["//visibility:public"],
-    deps = ["@com_github_mattn_go_sqlite3//:go-sqlite3"],
+    deps = [
+        "//workq",
+        "@com_github_mattn_go_sqlite3//:go-sqlite3",
+    ],
 )
 
 go_test(
     name = "durable_test",
     srcs = [
+        "delivery_test.go",
         "accounting_test.go",
         "session_test.go",
         "config_test.go",

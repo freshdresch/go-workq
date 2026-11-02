@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/freshdresch/go-data-structures/workq"
 )
 
 // Open validates and owns directory until the returned Queue joins. Its context
@@ -15,7 +17,17 @@ func Open(ctx context.Context, directory string, config Config) (*Queue, error) 
 	if err != nil {
 		return nil, err
 	}
+	capacity := 1
+	for capacity < int(config.Runtime.Delivery.Items) {
+		capacity *= 2
+	}
+	deliveryQueue, err := workq.New[int](capacity)
+	if err != nil {
+		return nil, errors.Join(err, opened.close())
+	}
 	queue := &Queue{
+		deliveryQueue: deliveryQueue, claims: make([]claim, config.Runtime.Delivery.Items),
+		deliveryDirty: true, pending: opened.metadata.counts.PendingItems,
 		opened: opened, config: config,
 		ordinary: admissionPool{slots: make([]command, config.Runtime.Ordinary.Commands),
 			budget: config.Runtime.Ordinary},
@@ -43,6 +55,7 @@ func (q *Queue) cutoffLocked() {
 	if q.closing {
 		return
 	}
+	q.stopDeliveryLocked()
 	q.closing = true
 	q.admissionStopped = true
 	close(q.stopping)

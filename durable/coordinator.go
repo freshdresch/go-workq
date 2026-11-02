@@ -27,10 +27,26 @@ func (q *Queue) coordinate() {
 	ctx := context.Background()
 	q.mu.Lock()
 	for {
+		if q.deliveryDirty && !q.deliveryStopped {
+			q.mu.Unlock()
+			err := q.dispatch(ctx)
+			q.mu.Lock()
+			if err != nil {
+				q.terminal = errors.Join(q.terminal, err)
+				q.aborting = true
+				q.cutoffLocked()
+			}
+		}
+		if q.deliveryStopped && !q.deliveryClosed {
+			q.closeDeliveryLocked()
+		}
 		pool, slot := q.nextLocked()
 		if slot == nil {
 			if q.closing {
 				break
+			}
+			if q.deliveryDirty && !q.deliveryStopped {
+				continue
 			}
 			changed := q.changed
 			q.mu.Unlock()
@@ -53,7 +69,14 @@ func (q *Queue) coordinate() {
 			if slot.submit {
 				result, err = q.executeSubmit(ctx, slot.entries)
 			} else {
-				statuses, err = q.opened.storage.lookup(ctx, slot.ids)
+				switch slot.kind {
+				case ackCommand:
+					result, err = q.executeAck(ctx, slot.tokens)
+				case releaseCommand:
+					err = q.executeRelease(slot.token)
+				default:
+					statuses, err = q.opened.storage.lookup(ctx, slot.ids)
+				}
 			}
 		}
 		q.mu.Lock()
@@ -63,6 +86,12 @@ func (q *Queue) coordinate() {
 			q.aborting = true
 			q.cutoffLocked()
 		}
+		q.pending = q.opened.metadata.counts.PendingItems
+		if err == nil && (slot.submit || slot.kind == ackCommand || slot.kind == releaseCommand) {
+			q.deliveryDirty = true
+			q.scanWrapped = false
+		}
+		slot.tokens = nil
 		slot.entries = nil
 		slot.ids = nil
 		slot.observer = nil
@@ -73,6 +102,10 @@ func (q *Queue) coordinate() {
 		} else {
 			q.signalLocked()
 		}
+	}
+	q.closeDeliveryLocked()
+	for index := range q.claims {
+		q.clearClaimLocked(index)
 	}
 	graceful := !q.aborting
 	q.mu.Unlock()

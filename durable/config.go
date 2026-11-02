@@ -122,7 +122,8 @@ func validateConfig(config Config) error {
 	}
 	valid := runtime.Batches.SubmitEncoded >= 88+record &&
 		runtime.Delivery.Retained >= payloadCharge+codecCharge+256 &&
-		runtime.Delivery.ReadScratch >= record &&
+		runtime.Delivery.ReadScratch >= deliveryScratchCharge(
+			config.Policy.MaxPayload, config.Policy.MaxCodec) &&
 		runtime.Ordinary.Retained >= submitRetained &&
 		runtime.Ordinary.Retained >= lookupRetained &&
 		runtime.Progress.Retained >= 256+128*Bytes(runtime.Batches.AckItems) &&
