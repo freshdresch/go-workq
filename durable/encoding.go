@@ -116,6 +116,9 @@ func encodePolicy(policy DurablePolicy) [56]byte {
 }
 
 func decodePolicy(profile ProfileID, encoded []byte) (DurablePolicy, error) {
+	if err := validateProfile(profile); err != nil {
+		return DurablePolicy{}, err
+	}
 	if len(encoded) != 56 {
 		return DurablePolicy{}, fmt.Errorf("policy length %d: %w", len(encoded), ErrStorage)
 	}
@@ -135,7 +138,7 @@ func decodePolicy(profile ProfileID, encoded []byte) (DurablePolicy, error) {
 		DatabaseLimit: Bytes(values[6]),
 	}
 	if err := validatePolicy(policy); err != nil {
-		return DurablePolicy{}, fmt.Errorf("stored policy: %w: %w", ErrStorage, err)
+		return DurablePolicy{}, fmt.Errorf("stored policy: %w: %v", ErrStorage, err)
 	}
 	return policy, nil
 }

@@ -41,9 +41,16 @@ func DefaultRuntime(policy DurablePolicy) (RuntimeConfig, error) {
 	}, nil
 }
 
+func validateProfile(profile ProfileID) error {
+	if profile != profileSQLiteWALV1 {
+		return fmt.Errorf("profile %q: %w", profile, ErrUnsupported)
+	}
+	return nil
+}
+
 func validatePolicy(policy DurablePolicy) error {
-	if policy.Profile != profileSQLiteWALV1 {
-		return fmt.Errorf("profile %q: %w", policy.Profile, ErrUnsupported)
+	if err := validateProfile(policy.Profile); err != nil {
+		return err
 	}
 	valid := policy.MaxPayload > 0 && policy.MaxPayload <= maxPayload &&
 		policy.MaxCodec <= maxCodec &&

@@ -114,6 +114,12 @@ func (s *store) configure(ctx context.Context, path string, config Config, creat
 			return fmt.Errorf("read %s: %w: %w", setting.name, ErrStorage, err)
 		}
 		if actual != setting.value {
+			if setting.name == "max_page_count" && actual > setting.value {
+				return fmt.Errorf(
+					"existing database exceeds requested main limit (%d pages > %d): %w",
+					actual, setting.value, ErrConfigMismatch,
+				)
+			}
 			return fmt.Errorf("%s=%d, requested %d: %w",
 				setting.name, actual, setting.value, ErrUnsupported)
 		}
