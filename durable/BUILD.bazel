@@ -117,6 +117,7 @@ go_test(
     gotags = ["durable_faulttest"],
     srcs = [
         "fault_test.go",
+        "fault_image_test.go",
         "crash_test.go",
         "delivery_test.go",
         "example_test.go",

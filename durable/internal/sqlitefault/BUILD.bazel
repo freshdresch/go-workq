@@ -3,7 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "sqlitefault",
     testonly = True,
-    srcs = ["controller.go", "forward.c", "abi.h"],
+    srcs = ["controller.go", "images.go", "forward.c", "abi.h"],
     cgo = True,
     copts = ["-Wall", "-Wextra", "-Werror"],
     importpath = "github.com/freshdresch/go-data-structures/workq/durable/internal/sqlitefault",
@@ -13,7 +13,7 @@ go_library(
 
 go_test(
     name = "sqlitefault_test",
-    srcs = ["forward_test.go"],
+    srcs = ["forward_test.go", "images_test.go"],
     gotags = ["durable_faulttest"],
     embed = [":sqlitefault"],
     deps = [

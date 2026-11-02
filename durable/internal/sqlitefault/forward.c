@@ -5,9 +5,13 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 extern int goFaultPath(uintptr_t, char *);
-extern int goFaultEvent(uintptr_t, char *, int, int, int, int, int);
+extern int goFaultOpenBoundary(uintptr_t, char *, int, int);
+extern int goFaultEvent(uintptr_t, char *, int, int, int, int, int, long long, long long);
+
+extern int goFaultDelete(uintptr_t, char *, unsigned long long, unsigned long long, int, int, int);
 
 typedef struct {
     sqlite3_vfs vfs;
@@ -44,14 +48,14 @@ static int faultClose(sqlite3_file *file) {
 static int faultSync(sqlite3_file *file, int flags) {
     FaultFile *wrapped = (FaultFile *)file;
     int result = goFaultEvent(wrapped->owner->handle, wrapped->path,
-        wrapped->descriptor, 2, 1, 0, 0);
+        wrapped->descriptor, 2, 1, 0, 0, 0, 0);
     int saved_errno = 0;
     if (result == 0) {
         result = wrapped->native->pMethods->xSync(wrapped->native, flags);
         saved_errno = result != 0 ? errno : 0;
     }
     int observed = goFaultEvent(wrapped->owner->handle, wrapped->path,
-        wrapped->descriptor, 2, 2, result, saved_errno);
+        wrapped->descriptor, 2, 2, result, saved_errno, 0, 0);
     return result != 0 ? result : observed;
 }
 
@@ -61,13 +65,29 @@ static int faultRead(sqlite3_file *file, void *buffer, int amount, sqlite3_int64
 }
 
 static int faultWrite(sqlite3_file *file, const void *buffer, int amount, sqlite3_int64 offset) {
-    sqlite3_file *native = ((FaultFile *)file)->native;
-    return native->pMethods->xWrite(native, buffer, amount, offset);
+    FaultFile *wrapped = (FaultFile *)file;
+    sqlite3_file *native = wrapped->native;
+    int result = goFaultEvent(wrapped->owner->handle, wrapped->path,
+        wrapped->descriptor, 3, 1, 0, 0, offset, amount);
+    if (result == 0) {
+        result = native->pMethods->xWrite(native, buffer, amount, offset);
+    }
+    int observed = goFaultEvent(wrapped->owner->handle, wrapped->path,
+        wrapped->descriptor, 3, 2, result, result != 0 ? errno : 0, offset, amount);
+    return result != 0 ? result : observed;
 }
 
 static int faultTruncate(sqlite3_file *file, sqlite3_int64 size) {
-    sqlite3_file *native = ((FaultFile *)file)->native;
-    return native->pMethods->xTruncate(native, size);
+    FaultFile *wrapped = (FaultFile *)file;
+    sqlite3_file *native = wrapped->native;
+    int result = goFaultEvent(wrapped->owner->handle, wrapped->path,
+        wrapped->descriptor, 4, 1, 0, 0, 0, size);
+    if (result == 0) {
+        result = native->pMethods->xTruncate(native, size);
+    }
+    int observed = goFaultEvent(wrapped->owner->handle, wrapped->path,
+        wrapped->descriptor, 4, 2, result, result != 0 ? errno : 0, 0, size);
+    return result != 0 ? result : observed;
 }
 
 static int faultFileSize(sqlite3_file *file, sqlite3_int64 *size) {
@@ -156,7 +176,15 @@ static int faultOpen(sqlite3_vfs *vfs, const char *path, sqlite3_file *file,
     if (wrapped->path == NULL) {
         return 7;
     }
-    int result = owner->native->xOpen(owner->native, path, wrapped->native, flags, out_flags);
+    int result = goFaultOpenBoundary(owner->handle, wrapped->path, 1, 0);
+    if (result != 0) {
+        free(wrapped->path);
+        return result;
+    }
+    result = owner->native->xOpen(owner->native, path, wrapped->native, flags, out_flags);
+    if (result != 0) {
+        goFaultOpenBoundary(owner->handle, wrapped->path, 2, result);
+    }
     if (result == 0) {
         UnixPrefix prefix;
         memcpy(&prefix, wrapped->native, sizeof(prefix));
@@ -165,7 +193,7 @@ static int faultOpen(sqlite3_vfs *vfs, const char *path, sqlite3_file *file,
             result = 10;
         } else {
             result = goFaultEvent(owner->handle, wrapped->path,
-                wrapped->descriptor, 1, 2, 0, 0);
+                wrapped->descriptor, 1, 2, 0, 0, 0, 0);
         }
     }
     if (result != 0) {
@@ -185,7 +213,19 @@ static int faultDelete(sqlite3_vfs *vfs, const char *path, int sync) {
         return 10;
     }
     sqlite3_vfs *native = ((FaultVFS *)vfs)->native;
-    return native->xDelete(native, path, sync);
+    struct stat status;
+    memset(&status, 0, sizeof(status));
+    if (lstat(path, &status) != 0 && errno != ENOENT) {
+        return 10;
+    }
+    int result = goFaultDelete(((FaultVFS *)vfs)->handle, (char *)path,
+        status.st_dev, status.st_ino, 1, 0, 0);
+    if (result == 0) {
+        result = native->xDelete(native, path, sync);
+    }
+    int observed = goFaultDelete(((FaultVFS *)vfs)->handle, (char *)path,
+        status.st_dev, status.st_ino, 2, result, result != 0 ? errno : 0);
+    return result != 0 ? result : observed;
 }
 
 static int faultAccess(sqlite3_vfs *vfs, const char *path, int flags, int *result) {

@@ -1,7 +1,7 @@
 //go:build durable_faulttest && linux && amd64 && cgo
 
 // Package sqlitefault provides the pinned, test-only SQLite VFS and sync observer.
-// It does not yet model synchronized images or restore namespaces.
+// Its optional disk oracle models loss of unsynchronized bytes and namespace entries.
 package sqlitefault
 
 /*
@@ -47,7 +47,11 @@ type Event struct {
 }
 
 // Limits bounds event retention. Overflow fails observation and the storage operation.
-type Limits struct{ Events int }
+type Limits struct {
+	Events int
+	// Scratch enables bounded disk images in an existing, isolated directory outside root.
+	Scratch string
+}
 
 // Effect selects the one supported round 8a fault.
 type Effect uint8
@@ -78,8 +82,10 @@ type Controller struct {
 	mu           sync.Mutex
 	events       []Event
 	sequence     uint64
+	pending      int
 	fault        *armedFault
 	failure      error
+	model        *imageModel
 }
 
 var nextName atomic.Uint64
@@ -87,7 +93,7 @@ var nextName atomic.Uint64
 // Attach registers a uniquely named VFS for exactly root's queue files.
 // The caller must close all connections before calling Controller.Close.
 func Attach(root string, limits Limits) (string, *Controller, error) {
-	if limits.Events <= 0 || limits.Events > 100000 {
+	if limits.Events <= 0 || limits.Events > 8192 {
 		return "", nil, ErrObservation
 	}
 	absolute, err := filepath.Abs(root)
@@ -104,12 +110,24 @@ func Attach(root string, limits Limits) (string, *Controller, error) {
 		limits: limits,
 		events: make([]Event, 0, limits.Events),
 	}
+	if limits.Scratch != "" {
+		model, err := newImageModel(canonical, limits.Scratch)
+		if err != nil {
+			return "", nil, err
+		}
+		controller.model = model
+	}
 	controller.handle = cgo.NewHandle(controller)
 	name := C.CString(controller.name)
 	defer C.free(unsafe.Pointer(name))
 	controller.registration = C.fault_register(name, C.uintptr_t(controller.handle))
 	if controller.registration == nil {
 		controller.handle.Delete()
+		if controller.model != nil {
+			if err := controller.model.close(); err != nil {
+				return "", nil, err
+			}
+		}
 		return "", nil, fmt.Errorf("unsupported pinned unix SQLite ABI: %w", ErrObservation)
 	}
 	return controller.name, controller, nil
@@ -125,7 +143,11 @@ func (c *Controller) Close() error {
 	}
 	c.registration = nil
 	c.handle.Delete()
-	return c.Err()
+	var closeErr error
+	if c.model != nil {
+		closeErr = c.model.close()
+	}
+	return errors.Join(c.Err(), closeErr)
 }
 
 // VFS returns the fixture's VFS only for its main database path.
@@ -150,6 +172,8 @@ func (c *Controller) role(path string) (string, string, error) {
 		return "wal", "queue.sqlite3-wal", nil
 	case filepath.Join(c.root, "queue.sqlite3-journal"):
 		return "journal", "queue.sqlite3-journal", nil
+	case filepath.Join(c.root, "queue.sqlite3-shm"):
+		return "shm", "queue.sqlite3-shm", nil
 	case filepath.Join(c.root, "LOCK"):
 		return "lock", "LOCK", nil
 	}
@@ -206,6 +230,9 @@ func (c *Controller) append(event Event) error {
 	if c.failure != nil {
 		return c.failure
 	}
+	if c.model != nil && c.model.frozen {
+		return c.failObservation(ErrObservation)
+	}
 	if len(c.events) == c.limits.Events {
 		c.failure = fmt.Errorf("event limit: %w", ErrObservation)
 		return c.failure
@@ -226,6 +253,9 @@ func (c *Controller) Before(event Event) error {
 	}
 	if event.Actual != event.Expected {
 		return c.failObservation(ErrObservation)
+	}
+	if c.model != nil {
+		c.pending++
 	}
 	if c.fault == nil {
 		return nil
@@ -261,6 +291,15 @@ func (c *Controller) After(event Event, result error) error {
 		result = errors.Join(result, ErrObservation)
 	}
 	appendErr := c.append(event)
+	if appendErr == nil && c.model != nil {
+		if c.pending == 0 {
+			return c.failObservation(ErrObservation)
+		}
+		c.pending--
+		if err := c.model.observe(event); err != nil {
+			appendErr = c.failObservation(err)
+		}
+	}
 	if errors.Is(result, ErrObservation) {
 		appendErr = errors.Join(appendErr, c.failObservation(result))
 	}
@@ -333,16 +372,16 @@ func goFaultPath(handle C.uintptr_t, path *C.char) C.int {
 func goFaultEvent(
 	handle C.uintptr_t, path *C.char, descriptor C.int,
 	operation C.int, phase C.int, result C.int, errno C.int,
+	offset C.longlong, length C.longlong,
 ) C.int {
 	controller := cgo.Handle(handle).Value().(*Controller)
 	event, err := controller.observeDescriptor(C.GoString(path), uintptr(descriptor))
 	if err != nil {
 		return 1034
 	}
-	event.Operation = "native-sync"
-	if operation == 1 {
-		event.Operation = "native-open"
-	}
+	event.Operation = map[int]string{1: "native-open", 2: "native-sync",
+		3: "native-write", 4: "native-truncate"}[int(operation)]
+	event.Offset, event.Length = int64(offset), int64(length)
 	event.Result = int(result)
 	event.Errno = syscall.Errno(errno)
 	if phase == 1 {
@@ -355,6 +394,98 @@ func goFaultEvent(
 		err = controller.After(event, outcome)
 	}
 	if err != nil {
+		return 1034
+	}
+	return 0
+}
+
+//export goFaultDelete
+func goFaultDelete(
+	handle C.uintptr_t, path *C.char,
+	device C.ulonglong, inode C.ulonglong,
+	phase C.int, result C.int, errno C.int,
+) C.int {
+	controller := cgo.Handle(handle).Value().(*Controller)
+	role, name, err := controller.role(C.GoString(path))
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	if err != nil {
+		_ = controller.failObservation(err) // Retained here and returned as SQLite failure below.
+		return 1034
+	}
+	parent, err := pathIdentity(controller.root)
+	if err != nil {
+		_ = controller.failObservation(err) // Retained here and returned as SQLite failure below.
+		return 1034
+	}
+	id := Identity{Device: uint64(device), Inode: uint64(inode)}
+	event := Event{Operation: "native-delete", Phase: "after", Role: role, Name: name,
+		Actual: id, Expected: id, Parent: parent, Result: int(result), Errno: syscall.Errno(errno)}
+	if phase == 1 {
+		event.Phase = "before"
+	}
+	if err := controller.append(event); err != nil {
+		return 1034
+	}
+	if controller.model != nil {
+		if phase == 1 {
+			controller.pending++
+			return 0
+		}
+		if controller.pending == 0 {
+			return 1034
+		}
+		controller.pending--
+		if err := controller.model.scan(); err != nil {
+			_ = controller.failObservation(err) // Retained here and returned as SQLite failure below.
+			return 1034
+		}
+	}
+	return 0
+}
+
+//export goFaultOpenBoundary
+func goFaultOpenBoundary(handle C.uintptr_t, path *C.char, phase C.int, result C.int) C.int {
+	controller := cgo.Handle(handle).Value().(*Controller)
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	role, name, err := controller.role(C.GoString(path))
+	if err != nil {
+		_ = controller.failObservation(err) // The callback returns SQLite failure below.
+		return 1034
+	}
+	id, err := pathIdentity(C.GoString(path))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		_ = controller.failObservation(err) // The callback returns SQLite failure below.
+		return 1034
+	}
+	parent, err := pathIdentity(controller.root)
+	if err != nil {
+		_ = controller.failObservation(err) // The callback returns SQLite failure below.
+		return 1034
+	}
+	event := Event{Operation: "native-open", Role: role, Name: name, Actual: id, Expected: id,
+		Parent: parent, Phase: "before", Result: int(result)}
+	if phase == 2 {
+		event.Phase = "after"
+	}
+	if err := controller.append(event); err != nil {
+		return 1034
+	}
+	if controller.model == nil {
+		return 0
+	}
+	if phase == 1 {
+		controller.pending++
+		return 0
+	}
+	if controller.pending == 0 {
+		_ = controller.failObservation(ErrObservation) // The callback returns SQLite failure below.
+		return 1034
+	}
+	controller.pending--
+	if err := controller.model.scan(); err != nil {
+		_ = controller.failObservation(err) // The callback returns SQLite failure below.
 		return 1034
 	}
 	return 0
