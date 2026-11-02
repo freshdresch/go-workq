@@ -93,3 +93,65 @@ func TestRuntimeDefaultsAndExplicitZeros(t *testing.T) {
 	assert.ErrorIs(t, err, ErrUnsupported)
 	assert.Equal(t, RuntimeConfig{}, runtime)
 }
+
+func TestRetainedBudgetBoundaries(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		payload    Bytes
+		codec      Bytes
+		items      Count
+		encoded    Bytes
+		lookup     Count
+		wantSubmit Bytes
+	}{
+		{"defaults", 16384, 64, 256, 2 << 20, 256, 4223872},
+		{"single8193", 8193, 0, 1, 8281, 1, 16832},
+		{"noCodec", 16384, 0, 256, 2 << 20, 256, 4192768},
+		{"tinyPayload", 1, 0, 256, 22784, 1, 42240},
+		{"encodedLimited", 1, 0, 256, 89, 1, 448},
+		{"lookupMaximum", 1, 0, 1, 89, 256, 448},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := testConfig(t)
+			config.Policy.MaxPayload, config.Policy.MaxCodec = tc.payload, tc.codec
+			config.Runtime.Batches.SubmitItems = tc.items
+			config.Runtime.Batches.SubmitEncoded = tc.encoded
+			config.Runtime.Batches.LookupItems = tc.lookup
+			maximum, err := maximumSubmitCharge(config.Policy, config.Runtime.Batches)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantSubmit, maximum)
+			lookup, err := lookupCharge(Bytes(tc.lookup))
+			require.NoError(t, err)
+			budget := max(maximum, lookup)
+			config.Runtime.Ordinary.Retained = budget
+			require.NoError(t, validateConfig(config))
+			queue := &Queue{config: config}
+			payloadBuffer := make([]byte, int(tc.payload))
+			for count := 0; count <= int(tc.items); count++ {
+				if 88*Bytes(count) > tc.encoded {
+					break
+				}
+				entries := make([]Entry, count)
+				remaining := tc.encoded - 88*Bytes(count)
+				for index := range entries {
+					payload := min(tc.payload, remaining)
+					entries[index] = Entry{ID: ID{Sequence: uint64(index)},
+						Payload: payloadBuffer[:int(payload)]}
+					remaining -= payload
+				}
+				allocation, err := queue.validateSubmit(entries)
+				require.NoError(t, err)
+				assert.LessOrEqual(t, allocation.charge, budget)
+			}
+			config.Runtime.Ordinary.Retained--
+			directory := filepath.Join(t.TempDir(), "absent")
+			queue, err = Open(t.Context(), directory, config)
+			assert.Nil(t, queue)
+			assert.ErrorIs(t, err, ErrInvalidInput)
+			_, err = os.Stat(directory)
+			assert.ErrorIs(t, err, os.ErrNotExist)
+		})
+	}
+}

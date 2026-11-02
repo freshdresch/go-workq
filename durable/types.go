@@ -149,3 +149,74 @@ type StoreCounts struct {
 	RetiredProducers Count
 	CleanupMarkers   Count
 }
+
+// Decision describes whether this invocation committed its complete mutation.
+type Decision uint8
+
+const (
+	// Unknown permits a committed or still executing command. Reconcile stable IDs.
+	Unknown Decision = iota
+	// NotApplied proves this invocation changed no state.
+	NotApplied
+	// Applied establishes the complete effect under the selected durability policy.
+	Applied
+)
+
+// String returns the decision name or Decision(n) for an undeclared value.
+func (d Decision) String() string {
+	switch d {
+	case Unknown:
+		return "unknown"
+	case NotApplied:
+		return "not-applied"
+	case Applied:
+		return "applied"
+	default:
+		return "Decision(" + strconv.Itoa(int(d)) + ")"
+	}
+}
+
+// CommitResult accompanies mutation errors to distinguish noncommit from uncertainty.
+type CommitResult struct{ Decision Decision }
+
+// StatusKind describes the committed state of an ID.
+type StatusKind uint8
+
+const (
+	// StatusUnknown never appears in a successful Lookup.
+	StatusUnknown StatusKind = iota
+	// Absent has no receipt and is above any retirement floor.
+	Absent
+	// Pending is accepted work that remains an obligation.
+	Pending
+	// Acknowledged is retained completed work.
+	Acknowledged
+	// Retired is at or below the producer's retirement floor.
+	Retired
+)
+
+// String returns the status name or StatusKind(n) for an undeclared value.
+func (s StatusKind) String() string {
+	switch s {
+	case StatusUnknown:
+		return "unknown"
+	case Absent:
+		return "absent"
+	case Pending:
+		return "pending"
+	case Acknowledged:
+		return "acknowledged"
+	case Retired:
+		return "retired"
+	default:
+		return "StatusKind(" + strconv.Itoa(int(s)) + ")"
+	}
+}
+
+// Status is a payload-free snapshot. HasRetirement distinguishes no floor from zero.
+type Status struct {
+	ID             ID
+	Kind           StatusKind
+	HasRetirement  bool
+	RetiredThrough uint64
+}

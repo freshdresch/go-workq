@@ -3,6 +3,12 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "durable",
     srcs = [
+        "accounting.go",
+        "admission.go",
+        "coordinator.go",
+        "lifecycle.go",
+        "lookup.go",
+        "submit.go",
         "config.go",
         "encoding.go",
         "errors.go",
@@ -22,6 +28,8 @@ go_library(
 go_test(
     name = "durable_test",
     srcs = [
+        "accounting_test.go",
+        "session_test.go",
         "config_test.go",
         "encoding_test.go",
         "store_test.go",

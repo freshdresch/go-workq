@@ -104,10 +104,27 @@ func validateConfig(config Config) error {
 		runtime.Batches.SubmitEncoded,
 		Bytes(runtime.Batches.SubmitItems)*(88+record),
 	)
+	submitRetained, err := maximumSubmitCharge(config.Policy, runtime.Batches)
+	if err != nil {
+		return err
+	}
+	lookupRetained, err := lookupCharge(Bytes(runtime.Batches.LookupItems))
+	if err != nil {
+		return err
+	}
+	payloadCharge, err := allocationCharge(config.Policy.MaxPayload)
+	if err != nil {
+		return err
+	}
+	codecCharge, err := allocationCharge(config.Policy.MaxCodec)
+	if err != nil {
+		return err
+	}
 	valid := runtime.Batches.SubmitEncoded >= 88+record &&
-		runtime.Delivery.Retained >= record+256 && runtime.Delivery.ReadScratch >= record &&
-		runtime.Ordinary.Retained >= 256+maximumSubmit+128*Bytes(runtime.Batches.SubmitItems) &&
-		runtime.Ordinary.Retained >= 256+128*Bytes(runtime.Batches.LookupItems) &&
+		runtime.Delivery.Retained >= payloadCharge+codecCharge+256 &&
+		runtime.Delivery.ReadScratch >= record &&
+		runtime.Ordinary.Retained >= submitRetained &&
+		runtime.Ordinary.Retained >= lookupRetained &&
 		runtime.Progress.Retained >= 256+128*Bytes(runtime.Batches.AckItems) &&
 		runtime.Progress.Retained >= 384 &&
 		runtime.Group.Operations >= max(runtime.Batches.SubmitItems, runtime.Batches.AckItems) &&
