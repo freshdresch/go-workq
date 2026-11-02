@@ -42,6 +42,7 @@ go_library(
 go_test(
     name = "durable_test",
     srcs = [
+        "crash_test.go",
         "delivery_test.go",
         "example_test.go",
         "offline_test.go",

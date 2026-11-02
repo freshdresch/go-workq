@@ -15,11 +15,21 @@ func (q *Queue) RetireThrough(
 	producer [16]byte,
 	sequence uint64,
 ) (CommitResult, error) {
+	return q.retireThroughObserved(ctx, producer, sequence, nil)
+}
+
+func (q *Queue) retireThroughObserved(
+	ctx context.Context,
+	producer [16]byte,
+	sequence uint64,
+	observer commandObserver,
+) (CommitResult, error) {
 	refused := CommitResult{Decision: NotApplied}
 	slot, err := q.reserve(ctx, &q.progress, 384, false)
 	if err != nil {
 		return refused, err
 	}
+	slot.observer = observer
 	slot.kind = retireCommand
 	slot.retirement = ID{Producer: producer, Sequence: sequence}
 	if err := q.handoff(ctx, slot); err != nil {

@@ -12,6 +12,14 @@ import (
 // Duplicate inputs are invalid. Cancellation after handoff can return Unknown.
 // After reopening, every token from an earlier epoch is stale.
 func (q *Queue) AckBatch(ctx context.Context, tokens []Token) (CommitResult, error) {
+	return q.ackBatchObserved(ctx, tokens, nil)
+}
+
+func (q *Queue) ackBatchObserved(
+	ctx context.Context,
+	tokens []Token,
+	observer commandObserver,
+) (CommitResult, error) {
 	refused := CommitResult{Decision: NotApplied}
 	if len(tokens) > int(q.config.Runtime.Batches.AckItems) {
 		return refused, ErrInvalidInput
@@ -27,6 +35,7 @@ func (q *Queue) AckBatch(ctx context.Context, tokens []Token) (CommitResult, err
 	if err != nil {
 		return refused, err
 	}
+	slot.observer = observer
 	slot.kind = ackCommand
 	slot.tokens = make([]Token, len(tokens))
 	copy(slot.tokens, tokens)

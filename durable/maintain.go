@@ -76,6 +76,9 @@ func maintainObserved(
 		if err = opened.storage.incrementalVacuum(boundary, pages); err != nil {
 			return result, err
 		}
+		if err = observeOffline(observer, "after-vacuum", opened); err != nil {
+			return result, err
+		}
 		if err = opened.offlineCheckpoint(boundary); err != nil {
 			return result, err
 		}

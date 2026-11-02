@@ -32,10 +32,22 @@ const (
 	startupAfterEpoch
 	startupDirectoryReady
 	startupAfterParentSync
+	startupBeforeInitialize
+	startupDuringInitialize
+	startupAfterInitialize
+	startupDuringEpoch
 )
 
 func (s startupStage) String() string {
 	switch s {
+	case startupBeforeInitialize:
+		return "before-initialize"
+	case startupDuringInitialize:
+		return "during-initialize"
+	case startupAfterInitialize:
+		return "after-initialize"
+	case startupDuringEpoch:
+		return "during-epoch"
 	case startupDirectoryReady:
 		return "directory-ready"
 	case startupAfterParentSync:
@@ -112,7 +124,7 @@ func startStoreObserved(
 		return nil, err
 	}
 	if create {
-		if err := opened.storage.initialize(ctx, config); err != nil {
+		if err := opened.storage.initializeObserved(ctx, config, observer); err != nil {
 			return nil, err
 		}
 	}
@@ -140,7 +152,7 @@ func startStoreObserved(
 	}
 	// Cancellation cannot interrupt an entered fencing transaction or namespace barrier.
 	boundary := context.WithoutCancel(ctx)
-	if err := opened.storage.writeEpoch(boundary, epoch); err != nil {
+	if err := opened.storage.writeEpochObserved(boundary, epoch, observer); err != nil {
 		return nil, err
 	}
 	opened.metadata.epoch = epoch
@@ -196,7 +208,14 @@ func (o *directoryOwner) checkContents() (bool, error) {
 	return true, nil
 }
 
-func (s *store) initialize(ctx context.Context, config Config) (err error) {
+func (s *store) initializeObserved(
+	ctx context.Context,
+	config Config,
+	observer startupObserver,
+) (err error) {
+	if observer != nil {
+		observer.Observe(startupBeforeInitialize)
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -241,11 +260,21 @@ func (s *store) initialize(ctx context.Context, config Config) (err error) {
 			return err
 		}
 	}
+	if observer != nil {
+		observer.Observe(startupDuringInitialize)
+	}
 	_, err = s.conn.ExecContext(boundary, "COMMIT")
+	if err == nil && observer != nil {
+		observer.Observe(startupAfterInitialize)
+	}
 	return err
 }
 
-func (s *store) writeEpoch(ctx context.Context, epoch uint64) (err error) {
+func (s *store) writeEpochObserved(
+	ctx context.Context,
+	epoch uint64,
+	observer startupObserver,
+) (err error) {
 	if _, err := s.conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return err
 	}
@@ -258,6 +287,9 @@ func (s *store) writeEpoch(ctx context.Context, epoch uint64) (err error) {
 	); err != nil {
 		_, rollbackErr := s.conn.ExecContext(ctx, "ROLLBACK")
 		return errors.Join(err, rollbackErr)
+	}
+	if observer != nil {
+		observer.Observe(startupDuringEpoch)
 	}
 	_, err = s.conn.ExecContext(ctx, "COMMIT")
 	return err

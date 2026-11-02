@@ -6,6 +6,19 @@ import (
 	"time"
 )
 
+// transactionObserver adds deterministic commit boundaries to a per-call test observer.
+type transactionObserver interface {
+	ObserveTransaction(string)
+}
+
+func (g *commandGroup) observeTransaction(stage string) {
+	for index := range g.count {
+		if observer, ok := g.commands[index].slot.observer.(transactionObserver); ok {
+			observer.ObserveTransaction(stage)
+		}
+	}
+}
+
 type groupedCommand struct {
 	pool   *admissionPool
 	slot   *command
@@ -197,6 +210,9 @@ func (q *Queue) executeGroup(ctx context.Context, group *commandGroup) error {
 			continue
 		}
 		metadata = next
+		if observer, ok := command.slot.observer.(transactionObserver); ok {
+			observer.ObserveTransaction("after-mutation")
+		}
 		command.result = CommitResult{Decision: Applied}
 	}
 	if err := storage.writeSubmitMetadata(ctx, metadata); err != nil {
@@ -210,6 +226,7 @@ func (q *Queue) executeGroup(ctx context.Context, group *commandGroup) error {
 		group.fail(group.count, CommitResult{Decision: Unknown}, err)
 		return err
 	}
+	group.observeTransaction("after-commit")
 	q.opened.metadata = metadata
 	q.mu.Lock()
 	q.snapshot.Store.Counts = metadata.counts
