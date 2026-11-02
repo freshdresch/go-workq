@@ -147,7 +147,11 @@ func syncOwnedDescriptor(file *os.File, path string) error {
 	if err := verifyOwnedDescriptor(file, path); err != nil {
 		return err
 	}
-	return file.Sync()
+	after, err := observeOwnedSync(file, path)
+	if err == nil {
+		err = file.Sync()
+	}
+	return after(err)
 }
 
 func (o *directoryOwner) verify() error {

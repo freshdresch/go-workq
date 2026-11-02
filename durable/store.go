@@ -61,6 +61,9 @@ func openStoreConnection(ctx context.Context, path string, create bool) (*store,
 	}
 	location := url.URL{Scheme: "file", Path: path}
 	query := url.Values{"mode": {mode}, "_busy_timeout": {"0"}}
+	if name := selectedFaultVFS(path); name != "" {
+		query.Set("vfs", name)
+	}
 	location.RawQuery = query.Encode()
 	db, err := sql.Open("sqlite3", location.String())
 	if err != nil {

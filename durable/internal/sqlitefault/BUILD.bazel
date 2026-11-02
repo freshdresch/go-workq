@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sqlitefault",
+    testonly = True,
+    srcs = ["controller.go", "forward.c", "abi.h"],
+    cgo = True,
+    copts = ["-Wall", "-Wextra", "-Werror"],
+    importpath = "github.com/freshdresch/go-data-structures/workq/durable/internal/sqlitefault",
+    visibility = ["//workq/durable:__subpackages__"],
+    deps = ["@com_github_mattn_go_sqlite3//:go-sqlite3"],
+)
+
+go_test(
+    name = "sqlitefault_test",
+    srcs = ["forward_test.go"],
+    gotags = ["durable_faulttest"],
+    embed = [":sqlitefault"],
+    deps = [
+        "@com_github_mattn_go_sqlite3//:go-sqlite3",
+        "@com_github_stretchr_testify//assert:assert",
+        "@com_github_stretchr_testify//require:require",
+    ],
+)
