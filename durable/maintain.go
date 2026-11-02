@@ -25,6 +25,8 @@ type MaintenanceResult struct {
 // in steps requesting at most 256 pages and at most 4096 pages per call. It preserves
 // logical records and file identity. Cancellation is checked between completed steps.
 // Physical progress may accompany an error. It does not guarantee future capacity.
+// Directory input, absolute form, and resolved form must each fit 4095 bytes.
+// Longer paths return [ErrInvalidInput]. See the package path-resolution memory boundary.
 func Maintain(ctx context.Context, directory string) (MaintenanceResult, error) {
 	return maintainObserved(ctx, directory, nil)
 }

@@ -155,3 +155,68 @@ func TestRetainedBudgetBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestConfigExactRelationBoundaries(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		setup func(*Config)
+		lower func(*Config)
+	}{
+		{"maximum record", func(cfg *Config) {
+			cfg.Runtime.Batches.SubmitEncoded = 88 + 16384 + 64
+		}, func(cfg *Config) { cfg.Runtime.Batches.SubmitEncoded-- }},
+		{"delivery record", func(cfg *Config) {
+			cfg.Runtime.Delivery.Retained = 33152
+		}, func(cfg *Config) { cfg.Runtime.Delivery.Retained-- }},
+		{"read scratch", func(cfg *Config) {
+			cfg.Runtime.Delivery.ReadScratch = 17664
+		}, func(cfg *Config) { cfg.Runtime.Delivery.ReadScratch-- }},
+		{"progress ack", func(cfg *Config) {
+			cfg.Runtime.Progress.Retained = 33024
+		}, func(cfg *Config) { cfg.Runtime.Progress.Retained-- }},
+		{"progress control", func(cfg *Config) {
+			cfg.Runtime.Batches.AckItems = 1
+			cfg.Runtime.Progress.Retained = 384
+		}, func(cfg *Config) { cfg.Runtime.Progress.Retained-- }},
+		{"group ack bytes", func(cfg *Config) {
+			cfg.Policy.MaxPayload, cfg.Policy.MaxCodec = 1, 0
+			cfg.Runtime.Batches.SubmitItems = 1
+			cfg.Runtime.Batches.SubmitEncoded = 89
+			cfg.Runtime.Group.Encoded = 56 * 256
+		}, func(cfg *Config) { cfg.Runtime.Group.Encoded-- }},
+		{"cleanup record", func(cfg *Config) {
+			cfg.Runtime.Maintenance.CleanupEncoded = 147
+		}, func(cfg *Config) { cfg.Runtime.Maintenance.CleanupEncoded-- }},
+		{"receive items", func(cfg *Config) {
+			cfg.Runtime.Delivery.ReceiveItems = 256
+		}, func(cfg *Config) { cfg.Runtime.Delivery.Items-- }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			tc.setup(&cfg)
+			require.NoError(t, validateConfig(cfg))
+			tc.lower(&cfg)
+			assert.ErrorIs(t, validateConfig(cfg), ErrInvalidInput)
+		})
+	}
+}
+
+func TestCheckedArithmeticExactLimits(t *testing.T) {
+	t.Parallel()
+	sum, err := checkedAdd(math.MaxUint64-1, 1)
+	require.NoError(t, err)
+	assert.Equal(t, Bytes(math.MaxUint64), sum)
+	product, err := checkedMultiply(math.MaxUint64, 1)
+	require.NoError(t, err)
+	assert.Equal(t, Bytes(math.MaxUint64), product)
+	product, err = checkedMultiply(math.MaxUint64, 0)
+	require.NoError(t, err)
+	assert.Zero(t, product)
+	_, err = allocationCharge(Bytes(math.MaxInt))
+	assert.ErrorIs(t, err, ErrInvalidInput)
+	charge, err := allocationCharge(Bytes(math.MaxInt) - 7)
+	require.NoError(t, err)
+	assert.Equal(t, Bytes(math.MaxUint64)-15, charge)
+}

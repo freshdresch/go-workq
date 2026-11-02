@@ -9,6 +9,8 @@ import (
 
 // Open validates and owns directory until the returned Queue joins. Its context
 // controls startup only. A failed publication returns nil and releases all handles.
+// Directory input, absolute form, and resolved form must each fit 4095 bytes.
+// Longer paths return [ErrInvalidInput]. See the package path-resolution memory boundary.
 func Open(ctx context.Context, directory string, config Config) (*Queue, error) {
 	opened, err := startStore(ctx, directory, config)
 	if err != nil {

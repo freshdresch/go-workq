@@ -10,6 +10,8 @@ import (
 // after that barrier, even if expected differs. Cancellation before mutation is
 // NotApplied. Once commit begins, it finishes safely and returns Applied or Unknown.
 // Observable closure errors after commit return Unknown and require Inspect.
+// Directory input, absolute form, and resolved form must each fit 4095 bytes.
+// Longer paths return [ErrInvalidInput]. See the package path-resolution memory boundary.
 func ChangeDurability(
 	ctx context.Context,
 	directory string,

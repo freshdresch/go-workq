@@ -145,8 +145,9 @@ func TestPostCommitPressurePreservesApplied(t *testing.T) {
 
 func TestFinalSnapshotDoesNotWaitForResponseConsumption(t *testing.T) {
 	queue, _ := openTestQueue(t, testConfig(t))
-	slot, err := queue.reserve(t.Context(), &queue.ordinary, 256, false)
+	slot, err := queue.reserve(t.Context(), &queue.ordinary, 33024, false)
 	require.NoError(t, err)
+	slot.ids = make([]ID, 256)
 	require.NoError(t, queue.handoff(t.Context(), slot))
 	for {
 		queue.mu.Lock()
@@ -161,11 +162,18 @@ func TestFinalSnapshotDoesNotWaitForResponseConsumption(t *testing.T) {
 	before := queue.Snapshot()
 	assert.Equal(t, Closed, before.State)
 	assert.Equal(t, Count(1), before.Ordinary.Commands)
-	_, _, err = queue.await(t.Context(), &queue.ordinary, slot)
+	queue.mu.Lock()
+	assert.Nil(t, slot.ids)
+	assert.Len(t, slot.statuses, 256)
+	assert.Equal(t, Bytes(33024), queue.ordinary.retained)
+	queue.mu.Unlock()
+	_, statuses, err := queue.await(t.Context(), &queue.ordinary, slot)
 	require.NoError(t, err)
+	assert.Len(t, statuses, 256)
 	assert.Equal(t, before, queue.Snapshot())
 	queue.mu.Lock()
 	assert.Zero(t, queue.ordinary.retained)
+	assert.Equal(t, command{}, *slot)
 	queue.mu.Unlock()
 }
 

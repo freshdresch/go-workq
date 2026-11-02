@@ -63,6 +63,34 @@ limits. Caller inputs, worker allocations, retained delivery bytes, native SQLit
 and runtime overhead require separate provision. There is no perpetual Ack reserve or hard RSS
 promise.
 
+Concurrent callers need an application limit. Waiting calls can retain old queue-created change
+notification channels, plus caller stacks, contexts, and runtime wait state. The queue roots one
+current notification generation, but paused callers can keep distinct closed generations live.
+These live caller-lifetime objects are outside the fixed queue-retained budgets. A channel measured
+112 bytes on Go 1.27.3 linux/amd64. That measurement is build-specific. Queue counters do not bound
+this overhead, caller-retained deliveries, backend allocations, GC garbage, or total process memory.
+
+Caller-created input, configuration, and error graphs can remain live through queue references.
+Their backing storage is outside queue-created allocation budgets. For example, Abort retains the
+full supplied cause so Wait and errors.Is/errors.As preserve its identity and details. Applications
+must bound the size and lifetime of those objects. The capped Snapshot cause detail still counts.
+Error-reporting graphs and formatting have the separate boundary below. Exclusion from the ledger
+does not mean referenced memory is free.
+
+Working-storage budgets do not bound application Error/Is/As methods, backend diagnostics, or
+error-reporting graphs and formatting.
+Formatted wrappers can retain a queue-created copy of a diagnostic message as well as its original
+graph. Fault and Abort reporting can therefore exceed the working-storage allowances. Applications
+need process headroom for that cost. Snapshot copies at most 256 detail bytes, but preparing that
+copy can allocate more. This preserves full returned causes and errors.Is/errors.As behavior.
+
+Open, Inspect, Maintain, and ChangeDurability limit directory input, absolute form, and resolved
+form to 4095 bytes each. Longer paths return ErrInvalidInput. Relative and symlink aliases remain
+supported. Filesystem normalization and resolution need separate startup/backend memory provision,
+including temporary allocations made by queue-invoked library calls. This phase precedes logical
+validation and active pools. Symlink traversal scratch can exceed the input limit. Retained
+canonical paths and DSNs remain charged to fixed storage.
+
 ## Submit and reconcile
 
 Recover each ID from a durable source position, or persist it before submission. Every retry

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -519,4 +520,70 @@ func TestStartupStoredProfileErrorCategories(t *testing.T) {
 			require.NoError(t, reopened.close())
 		})
 	}
+}
+
+func TestDirectoryInputLimitRejectsBeforeArtifacts(t *testing.T) {
+	for _, operation := range []string{"Open", "Inspect", "Maintain", "ChangeDurability"} {
+		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
+			parent := t.TempDir()
+			directory := parent + "/" + strings.Repeat("./", 2<<20) + "queue"
+			var err error
+			switch operation {
+			case "Open":
+				var queue *Queue
+				queue, err = Open(t.Context(), directory, testConfig(t))
+				if queue != nil {
+					require.NoError(t, queue.Close(t.Context()))
+				}
+			case "Inspect":
+				_, err = Inspect(t.Context(), directory, nil)
+			case "Maintain":
+				_, err = Maintain(t.Context(), directory)
+			case "ChangeDurability":
+				_, err = ChangeDurability(t.Context(), directory, Synchronized, ProcessCrash)
+			}
+			assert.ErrorIs(t, err, ErrInvalidInput)
+			entries, readErr := os.ReadDir(parent)
+			require.NoError(t, readErr)
+			assert.Empty(t, entries)
+		})
+	}
+}
+
+func TestDirectoryInputLimitBoundary(t *testing.T) {
+	t.Parallel()
+	parent := t.TempDir()
+	directory := parent + strings.Repeat("/", 4095-len(parent)-len("queue")) + "queue"
+	require.Len(t, directory, 4095)
+	queue, err := Open(t.Context(), directory+"/", testConfig(t))
+	if queue != nil {
+		require.NoError(t, queue.Close(t.Context()))
+	}
+	assert.ErrorIs(t, err, ErrInvalidInput)
+	entries, err := os.ReadDir(parent)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+	queue, err = Open(t.Context(), directory, testConfig(t))
+	require.NoError(t, err)
+	require.NoError(t, queue.Close(t.Context()))
+	cwd, err := os.Getwd()
+	require.NoError(t, err)
+	relative, err := filepath.Rel(cwd, filepath.Join(parent, "queue"))
+	require.NoError(t, err)
+	queue, err = Open(t.Context(), relative, testConfig(t))
+	require.NoError(t, err)
+	require.NoError(t, queue.Close(t.Context()))
+}
+
+func TestDirectoryAbsoluteLimit(t *testing.T) {
+	t.Parallel()
+	directory := strings.Repeat("a/", 2047) + "a"
+	require.Len(t, directory, 4095)
+	owner, err := acquireDirectory(directory)
+	if owner != nil {
+		require.NoError(t, owner.close())
+	}
+	assert.Nil(t, owner)
+	assert.ErrorIs(t, err, ErrInvalidInput)
 }

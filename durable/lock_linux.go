@@ -10,6 +10,8 @@ import (
 	"syscall"
 )
 
+const maxDirectoryBytes = 4095
+
 type directoryOwner struct {
 	path        string
 	directory   *os.File
@@ -38,15 +40,28 @@ func acquireDirectoryMode(
 	observer startupObserver,
 	create bool,
 ) (_ *directoryOwner, err error) {
+	// Bound caller-controlled cleaning before filepath.Abs can allocate from its length.
+	if len(path) > maxDirectoryBytes {
+		return nil, ErrInvalidInput
+	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
+	}
+	if len(absolute) > maxDirectoryBytes {
+		return nil, ErrInvalidInput
 	}
 	parentPath, err := filepath.EvalSymlinks(filepath.Dir(absolute))
 	if err != nil {
 		return nil, err
 	}
+	if len(parentPath) > maxDirectoryBytes {
+		return nil, ErrInvalidInput
+	}
 	canonical := filepath.Join(parentPath, filepath.Base(absolute))
+	if len(canonical) > maxDirectoryBytes {
+		return nil, ErrInvalidInput
+	}
 	if create {
 		if err := os.Mkdir(canonical, 0700); err != nil {
 			if !errors.Is(err, os.ErrExist) {
@@ -57,6 +72,9 @@ func acquireDirectoryMode(
 	canonical, err = filepath.EvalSymlinks(canonical)
 	if err != nil {
 		return nil, err
+	}
+	if len(canonical) > maxDirectoryBytes {
+		return nil, ErrInvalidInput
 	}
 	if observer != nil {
 		observer.Observe(startupDirectoryReady)

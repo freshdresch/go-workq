@@ -36,6 +36,8 @@ func observeOffline(observer offlineObserver, stage string, opened *validatedSto
 // Errors preserve causes returned by the driver and owned descriptors. The driver
 // can replace a concurrent SQL failure with cancellation, so cancellation alone
 // does not establish storage health. Checkpoint blockage returns [MaintenanceError].
+// Directory input, absolute form, and resolved form must each fit 4095 bytes.
+// Longer paths return [ErrInvalidInput]. See the package path-resolution memory boundary.
 func Inspect(ctx context.Context, directory string, ids []ID) (Inspection, error) {
 	return inspectObserved(ctx, directory, ids, nil)
 }

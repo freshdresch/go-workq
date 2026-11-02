@@ -46,6 +46,7 @@ go_test(
         "example_test.go",
         "offline_test.go",
         "accounting_test.go",
+        "layout_test.go",
         "session_test.go",
         "group_test.go",
         "retire_test.go",
@@ -59,6 +60,8 @@ go_test(
     ],
     embed = [":durable"],
     deps = [
+        "//workq",
+        "//ring/frontier",
         "@com_github_mattn_go_sqlite3//:go-sqlite3",
         "@com_github_stretchr_testify//assert:assert",
         "@com_github_stretchr_testify//require:require",

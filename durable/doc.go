@@ -36,6 +36,24 @@
 // removing logical obligations or promising future Ack capacity. Preserve the database and
 // surviving WAL together. Never delete WAL to recover from an error.
 //
+// Bound concurrent callers separately from command and delivery budgets. Waiting calls can
+// retain old queue-created notification channels, plus caller stacks, contexts, and runtime
+// wait state. Those live objects are outside the fixed queue-retained budgets. Queue counters
+// do not bound total process memory or caller-retained deliveries.
+//
+// Caller-created input, configuration, and error graphs retained through references also need
+// application provision. Abort retains its full cause for Wait and errors.Is/errors.As.
+// Error-reporting graphs and formatting are outside working-storage budgets, including
+// queue-created diagnostic message copies. Fault/Abort reporting needs application headroom.
+// Snapshot retains at most 256 detail bytes, but preparing that detail can allocate more.
+//
+// Open and offline calls limit directory input, absolute form, and resolved form to
+// 4095 bytes each. Longer paths return [ErrInvalidInput]. Relative and symlink aliases
+// remain supported. Filesystem normalization and resolution temporaries, including those
+// allocated by queue-invoked library calls, need separate startup/backend memory provision.
+// This phase precedes logical validation and active pools. Symlink traversal scratch is
+// not bounded by the input limit. Retained canonical paths and DSNs count as fixed storage.
+//
 // The implementation requires cgo and a C compiler with pinned bundled SQLite. Its support
 // scope is Linux amd64 on local ext4 with private directory ownership and storage that honors
 // synchronization. Network filesystems and Windows-mounted WSL paths are outside that scope.
