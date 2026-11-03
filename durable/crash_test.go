@@ -96,6 +96,11 @@ func seedCrashStore(t *testing.T, request crashRequest) [][56]byte {
 	config.Durability = request.Durability
 	queue, err := Open(t.Context(), request.Directory, config)
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		queue.Abort(ErrStopped)
+		// Abort supplies a terminal cause. Cleanup only needs to join the owner.
+		_ = queue.Wait()
+	})
 	entries := crashEntries(request.Seed)
 	result, err := queue.SubmitBatch(t.Context(), entries)
 	require.NoError(t, err)

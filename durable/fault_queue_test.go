@@ -259,6 +259,14 @@ func checkQueueImage(t *testing.T, mode string, boundary queueImageBoundary) {
 	}
 	assert.Equal(t, counts, inspection.Store.Counts)
 	checkCrashReceipts(t, crashRequest{Directory: root, Seed: 41})
+	ordered := crashEntries(41)
+	if operation == "submit" {
+		ordered = queueImageSubmitEntries()
+		if durability == ProcessCrash {
+			ordered = nil
+		}
+	}
+	checkImageAcceptanceOrder(t, root, ordered)
 	checkQueueImageAckTokens(t, boundary, operation, durability)
 	config := testConfig(t)
 	config.Durability = expectedPolicy
@@ -416,6 +424,9 @@ func queueImageGroup(t *testing.T, queue *Queue, operation string) [][56]byte {
 	}
 	results := make(chan outcome, 2) // Exactly two commands form this transaction group.
 	entries := crashEntries(41)
+	if operation == "submit" {
+		entries = queueImageSubmitEntries()
+	}
 	for index := range 2 {
 		go func() {
 			var result CommitResult
@@ -430,8 +441,9 @@ func queueImageGroup(t *testing.T, queue *Queue, operation string) [][56]byte {
 			}
 			results <- outcome{result: result, err: err}
 		}()
+		// Keep both commands grouped, but make their global handoff order explicit.
+		waitQueueSequence(t, queue, target+uint64(index)+1)
 	}
-	waitQueueSequence(t, queue, target+2)
 	parked := make(chan struct{})
 	go func() {
 		_, _ = queue.submitBatchObserved(t.Context(), nil,
@@ -523,4 +535,43 @@ func checkQueueImageAckTokens(
 		wantCount = 4
 	}
 	assert.Equal(t, wantCount, count)
+}
+
+func queueImageSubmitEntries() []Entry {
+	entries := crashEntries(41)
+	return []Entry{entries[2], entries[3], entries[0], entries[1]}
+}
+
+func checkImageAcceptanceOrder(t *testing.T, root string, entries []Entry) {
+	t.Helper()
+	opened, err := openOffline(t.Context(), root)
+	require.NoError(t, err)
+	defer func() { assert.NoError(t, opened.close()) }()
+	rows, err := opened.storage.conn.QueryContext(
+		t.Context(), "SELECT id,accept_order FROM receipts LIMIT 6",
+	)
+	require.NoError(t, err)
+	actual := make(map[ID]uint64)
+	for rows.Next() {
+		var wireID, wireOrder []byte
+		require.NoError(t, rows.Scan(&wireID, &wireOrder))
+		id, err := decodeID(wireID)
+		require.NoError(t, err)
+		require.Len(t, wireOrder, 8)
+		actual[id] = binary.BigEndian.Uint64(wireOrder)
+	}
+	require.NoError(t, rows.Err())
+	require.NoError(t, rows.Close())
+	require.LessOrEqual(t, len(actual), 5, "fixture exceeded acceptance-order row bound")
+	expected := make(map[ID]uint64, len(entries))
+	for index, entry := range entries {
+		expected[entry.ID] = uint64(index) + 1
+	}
+	require.Equal(t, expected, actual)
+	var last []byte
+	require.NoError(t, opened.storage.conn.QueryRowContext(
+		t.Context(), "SELECT value FROM meta WHERE key=?", metaLastOrder,
+	).Scan(&last))
+	require.Len(t, last, 8)
+	require.Equal(t, uint64(len(entries)), binary.BigEndian.Uint64(last))
 }
