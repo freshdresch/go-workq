@@ -10,6 +10,20 @@ import (
 	"math"
 )
 
+type applyStage string
+
+const (
+	provisionalReceiptInserted applyStage = "provisional receipt inserted"
+	inventoryUpdated           applyStage = "inventory updated"
+	destinationCommitSucceeded applyStage = "destination commit succeeded"
+)
+
+func (s *Store) observeStage(stage applyStage) {
+	if s.stageHook != nil {
+		s.stageHook(stage)
+	}
+}
+
 const receiptWhere = `version = 1 AND namespace = ? AND producer = ?
  AND sequence = ? AND effect = ?`
 
@@ -69,6 +83,7 @@ func (s *Store) Apply(ctx context.Context, request Request) (Result, error) {
 	if err := s.commit(tx); err != nil {
 		return Result{}, err
 	}
+	s.observeStage(destinationCommitSucceeded)
 	return result, nil
 }
 
@@ -104,6 +119,7 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, request Request) (Result,
 	if err != nil {
 		return Result{}, fmt.Errorf("insert receipt: %w: %w", ErrUnresolved, err)
 	}
+	s.observeStage(provisionalReceiptInserted)
 	var current Inventory
 	err = tx.QueryRowContext(ctx,
 		"SELECT quantity, adjustments FROM inventory WHERE item = ?", adjustment.item,
@@ -128,6 +144,7 @@ func (s *Store) apply(ctx context.Context, tx *sql.Tx, request Request) (Result,
 	if err := exactlyOne(updated, err); err != nil {
 		return Result{}, err
 	}
+	s.observeStage(inventoryUpdated)
 	args = append([]any{quantity}, keyArguments(request.Key)...)
 	updated, err = tx.ExecContext(ctx,
 		"UPDATE receipts SET result_quantity = ? WHERE "+receiptWhere, args...)

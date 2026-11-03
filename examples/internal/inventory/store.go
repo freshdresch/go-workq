@@ -52,6 +52,10 @@ type Store struct {
 	failure      error
 	closed       bool
 	closeErr     error
+
+	// Tests set these before use. Neither hook may replace SQL or clear failure.
+	stageHook     func(applyStage)
+	observeCommit func(error) error
 }
 
 // Open opens an inventory database in a private operator-owned directory.
@@ -146,7 +150,11 @@ func (s *Store) rollback(tx *sql.Tx, cause error) error {
 }
 
 func (s *Store) commit(tx *sql.Tx) error {
-	if err := tx.Commit(); err != nil {
+	err := tx.Commit()
+	if s.observeCommit != nil {
+		err = errors.Join(err, s.observeCommit(err))
+	}
+	if err != nil {
 		return s.poison(fmt.Errorf("commit: %w", err))
 	}
 	return nil
