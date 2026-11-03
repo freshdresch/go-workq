@@ -131,6 +131,12 @@ type requestAdmission struct {
 	mu       sync.Mutex
 	closed   bool
 	handlers sync.WaitGroup
+
+	// Per-instance test observations are installed before serving starts.
+	beforeAdmission func(*http.Request)
+	afterRequest    func(*http.Request)
+	afterCutoff     func()
+	beforeWait      func()
 }
 
 func newRequestAdmission(store *inventory.Store, handler http.Handler) *requestAdmission {
@@ -140,6 +146,12 @@ func newRequestAdmission(store *inventory.Store, handler http.Handler) *requestA
 }
 
 func (a *requestAdmission) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if a.afterRequest != nil {
+		defer a.afterRequest(r)
+	}
+	if a.beforeAdmission != nil {
+		a.beforeAdmission(r)
+	}
 	if !a.admit() {
 		writeState(w, http.StatusServiceUnavailable, "unresolved")
 		return
@@ -173,9 +185,15 @@ func (a *requestAdmission) closeAdmission() {
 	a.mu.Lock()
 	a.closed = true
 	a.mu.Unlock()
+	if a.afterCutoff != nil {
+		a.afterCutoff()
+	}
 }
 
 func (a *requestAdmission) waitHandlers() {
+	if a.beforeWait != nil {
+		a.beforeWait()
+	}
 	a.handlers.Wait()
 }
 

@@ -20,6 +20,9 @@ type execution struct {
 	client          *adjustmentClient
 	output          io.Writer
 	stopAfterCommit bool
+
+	// Tests observe completed joins before the owner closes resources.
+	afterJoin func()
 }
 
 type workerResult struct {
@@ -88,6 +91,9 @@ func serveAndWork(ctx context.Context, owned execution) error {
 		serveErr = <-serveDone
 	}
 	owned.admission.waitHandlers()
+	if owned.afterJoin != nil {
+		owned.afterJoin()
+	}
 	owned.client.closeIdleConnections()
 	if errors.Is(serveErr, http.ErrServerClosed) {
 		serveErr = nil

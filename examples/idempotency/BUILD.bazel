@@ -26,7 +26,15 @@ go_binary(
 
 go_test(
     name = "idempotency_test",
-    srcs = ["client_test.go", "main_test.go", "response_test.go", "server_test.go"],
+    srcs = [
+        "client_test.go",
+        "main_test.go",
+        "owner_test.go",
+        "recovery_test.go",
+        "response_fuzz_test.go",
+        "response_test.go",
+        "server_test.go",
+    ],
     embed = [":idempotency_lib"],
     deps = [
         "//workq/durable",
