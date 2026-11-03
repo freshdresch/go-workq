@@ -11,10 +11,6 @@ import (
 	"github.com/mattn/go-sqlite3"
 )
 
-// The candidate remains unqualified until measured production installation in
-// round 10b. Tests inject a finite envelope without equating it to the trigger.
-const walEnvelopeBytes Bytes = 0
-
 type walObserver interface{ WALBytes() (Bytes, error) }
 
 func (q *Queue) observeWAL() (Bytes, error) {
@@ -62,7 +58,7 @@ func (q *Queue) sampleStorage(ctx context.Context) error {
 }
 
 func (q *Queue) checkEnvelopeLocked(wal Bytes) error {
-	if q.walEnvelope != 0 && wal > q.walEnvelope {
+	if wal > walEnvelopeBytes {
 		return q.enterMaintenanceLocked(WALEnvelopeExceeded)
 	}
 	return nil

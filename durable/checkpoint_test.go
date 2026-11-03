@@ -113,14 +113,13 @@ type fixedWAL struct{ size Bytes }
 func (w fixedWAL) WALBytes() (Bytes, error) { return w.size, nil }
 
 func TestEnvelopeComparedBeforeCheckpointAndNeverRecovers(t *testing.T) {
-	for _, size := range []Bytes{99, 100, 101} {
+	for _, size := range []Bytes{walEnvelopeBytes - 1, walEnvelopeBytes, walEnvelopeBytes + 1} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			queue := groupFixture(t, testConfig(t))
 			queue.stopping = make(chan struct{})
-			queue.walEnvelope = 100
-			queue.walObserver = fixedWAL{size: size}
+			queue.walObserver = &sequenceWAL{values: []Bytes{size, 0}}
 			err := queue.beforeWrite(t.Context())
-			if size <= 100 {
+			if size <= walEnvelopeBytes {
 				require.NoError(t, err)
 				return
 			}
@@ -132,14 +131,75 @@ func TestEnvelopeComparedBeforeCheckpointAndNeverRecovers(t *testing.T) {
 	}
 }
 
+type crossEnvelopeAfterCommit struct{ queue *Queue }
+
+func (o crossEnvelopeAfterCommit) BeforeExecute() {}
+
+func (o crossEnvelopeAfterCommit) ObserveTransaction(stage string) {
+	if stage == "after-commit" {
+		o.queue.walObserver = &sequenceWAL{values: []Bytes{walEnvelopeBytes + 1, 0}}
+	}
+}
+
 func TestPostCommitPressurePreservesApplied(t *testing.T) {
+	queue, err := Open(t.Context(), filepath.Join(t.TempDir(), "queue"), testConfig(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = queue.Close(context.Background()) })
+	first := Entry{ID: ID{Sequence: 1}}
+	_, err = queue.SubmitBatch(t.Context(), []Entry{first})
+	require.NoError(t, err)
+	deliveries, err := queue.Receive(t.Context(), 1)
+	require.NoError(t, err)
+	entry := Entry{ID: ID{Sequence: 2}, Payload: make([]byte, 16384)}
+	result, err := queue.submitBatchObserved(
+		t.Context(), []Entry{entry}, crossEnvelopeAfterCommit{queue: queue},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, Applied, result.Decision)
+	<-queue.Stopping()
+	assert.Equal(t, MaintenanceRequired, queue.Snapshot().State)
+	assert.Equal(t, WALEnvelopeExceeded, queue.Snapshot().Maintenance.Reason)
+	commits := queue.Snapshot().Outcomes.Commits
+	_, err = queue.Receive(t.Context(), 1)
+	assert.ErrorIs(t, err, ErrMaintenanceRequired)
+	result, err = queue.SubmitBatch(t.Context(), nil)
+	assert.ErrorIs(t, err, ErrMaintenanceRequired)
+	assert.Equal(t, NotApplied, result.Decision)
+	result, err = queue.AckBatch(t.Context(), nil)
+	assert.ErrorIs(t, err, ErrMaintenanceRequired)
+	assert.Equal(t, NotApplied, result.Decision)
+	result, err = queue.SubmitBatch(t.Context(), []Entry{entry})
+	assert.ErrorIs(t, err, ErrMaintenanceRequired)
+	assert.Equal(t, NotApplied, result.Decision)
+	result, err = queue.RetireThrough(t.Context(), [16]byte{1}, 0)
+	assert.ErrorIs(t, err, ErrMaintenanceRequired)
+	assert.Equal(t, NotApplied, result.Decision)
+	statuses, err := queue.Lookup(t.Context(), []ID{first.ID, entry.ID})
+	require.NoError(t, err)
+	require.Len(t, statuses, 2)
+	assert.Equal(t, Pending, statuses[0].Kind)
+	assert.Equal(t, Pending, statuses[1].Kind)
+	require.NoError(t, queue.Release(deliveries[0].Token))
+	assert.Equal(t, commits, queue.Snapshot().Outcomes.Commits)
+	require.ErrorIs(t, queue.Close(t.Context()), ErrMaintenanceRequired)
+	assert.Zero(t, queue.Snapshot().Store.WALBytes)
+	assert.Equal(t, WALEnvelopeExceeded, queue.Snapshot().Maintenance.Reason)
+}
+
+func TestPreWriteEnvelopeRefusesUnstartedGroup(t *testing.T) {
 	queue := groupFixture(t, testConfig(t))
 	queue.stopping = make(chan struct{})
+	queue.walObserver = fixedWAL{size: walEnvelopeBytes + 1}
+	group := commandGroup{
+		commands: []groupedCommand{{slot: submitCommand(Entry{})}}, count: 1,
+	}
+	require.ErrorIs(t, queue.executeGroup(t.Context(), &group), ErrMaintenanceRequired)
+	assert.Equal(t, NotApplied, group.commands[0].result.Decision)
+	assert.Zero(t, queue.Snapshot().Outcomes.Commits)
+	assert.Zero(t, queue.opened.metadata.counts.PendingItems)
+	queue.walObserver = fixedWAL{}
 	require.NoError(t, queue.sampleStorage(t.Context()))
-	queue.walEnvelope = queue.Snapshot().Store.WALBytes
-	group := runGroup(t, queue, submitCommand(Entry{Payload: make([]byte, 16384)}))
-	assert.Equal(t, Applied, group.commands[0].result.Decision)
-	assert.NoError(t, group.commands[0].err)
+	require.ErrorIs(t, queue.beforeWrite(t.Context()), ErrMaintenanceRequired)
 	assert.Equal(t, MaintenanceRequired, queue.Snapshot().State)
 }
 
@@ -413,8 +473,7 @@ func TestCleanupUsesPressurePath(t *testing.T) {
 	assert.Equal(t, uint64(1), queue.Snapshot().Outcomes.Checkpoints)
 	assert.Zero(t, queue.opened.metadata.counts.CleanupMarkers)
 	queue.stopping = make(chan struct{})
-	queue.walEnvelope = 100
-	queue.walObserver = fixedWAL{size: 101}
+	queue.walObserver = fixedWAL{size: walEnvelopeBytes + 1}
 	require.ErrorIs(t, queue.cleanupTurn(t.Context()), ErrMaintenanceRequired)
 	assert.Equal(t, uint64(1), queue.Snapshot().Outcomes.CleanupTurns)
 }

@@ -37,7 +37,6 @@ func Open(ctx context.Context, directory string, config Config) (*Queue, error) 
 	if err := cancellation(ctx); err != nil {
 		return nil, errors.Join(err, opened.close())
 	}
-	queue.walEnvelope = walEnvelopeBytes
 	queue.snapshot.Store = StoreInfo{UUID: opened.metadata.uuid, Epoch: opened.metadata.epoch,
 		Policy: config.Policy, Durability: config.Durability, Counts: opened.metadata.counts}
 	queue.snapshot.Validation = opened.validation

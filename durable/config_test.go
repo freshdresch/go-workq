@@ -220,3 +220,8 @@ func TestCheckedArithmeticExactLimits(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, Bytes(math.MaxUint64)-15, charge)
 }
+
+func TestProfileWALEnvelope(t *testing.T) {
+	assert.Equal(t, Bytes(67108864), walEnvelopeBytes)
+	assert.Greater(t, walEnvelopeBytes, maxCheckpointTrigger)
+}

@@ -5,8 +5,9 @@ encoding, source IDs, workers, retry policy, and external effects. The queue has
 external-effect guarantee. A destination needs idempotency keyed by the source ID or participation
 in an application transaction.
 
-The implementation uses the candidate `sqlite-wal-v1` profile. Production resource, native fault,
-and release qualification remain pending. Existing backend benchmarks do not qualify this queue.
+The implementation uses the `sqlite-wal-v1` profile with a 64 MiB operational WAL envelope.
+The [profile manifest](PROFILE.md) records finite production resource measurements and initial
+deployment provision. Release qualification, production comparison, and final review remain pending.
 
 ## Build and run
 
@@ -47,8 +48,9 @@ queue, err := durable.Open(ctx, directory, durable.Config{
 })
 ```
 
-These numbers are candidate ceilings, not a deployment provision recommendation. Zero `Config`
-is invalid. Runtime zero fields do not request defaults. Runtime tuning may change on reopen
+These numbers are logical ceilings. The [profile manifest](PROFILE.md) gives separate initial
+process-memory and disk provision recommendations. Zero `Config` is invalid.
+Runtime zero fields do not request defaults. Runtime tuning may change on reopen
 within supported relations. Persisted logical policy and durability must match exactly.
 
 `Synchronized` is the zero/default durability and uses FULL. Applied mutations survive application
@@ -58,7 +60,9 @@ loss. There is no bounded loss window. NORMAL retains atomic batches and applica
 recovery. Initialization and token epochs use FULL in both modes.
 
 The main database cap excludes WAL and filesystem overhead. The checkpoint trigger permits one
-group's overshoot and is not a hard WAL cap. SQLite cache and mmap settings are not total-memory
+group's overshoot and is not a hard WAL cap. An observed WAL length above 64 MiB irreversibly
+stops new delivery and unstarted mutations for the session. A crossing commit remains Applied,
+and healthy Lookup and Release remain available. SQLite cache and mmap settings are not total-memory
 limits. Caller inputs, worker allocations, retained delivery bytes, native SQLite allocations,
 and runtime overhead require separate provision. There is no perpetual Ack reserve or hard RSS
 promise.

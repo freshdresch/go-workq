@@ -8,8 +8,11 @@
 // uses SQLite FULL. [ProcessCrash] uses NORMAL, which permits recent successful submissions,
 // acknowledgements, and retirement floors to roll back after OS crash or power loss.
 // Open requires matching persisted policy. Change durability only while offline with
-// [ChangeDurability]. The sqlite-wal-v1 profile is a candidate awaiting resource and fault
-// qualification, not a qualified production deployment envelope.
+// [ChangeDurability]. The sqlite-wal-v1 profile has a 64 MiB operational WAL envelope.
+// An observation above it irreversibly stops mutations and new delivery for that session.
+// A crossing commit keeps its Applied result. Healthy Lookup and Release remain available.
+// The envelope is not a hard file-size cap. See PROFILE.md for measured resource evidence
+// and remaining release qualification.
 //
 // Keep the same [ID], codec, and payload when retrying a source occurrence. Inputs remain
 // caller-owned and must stay unchanged during a call. The queue copies admitted input, so

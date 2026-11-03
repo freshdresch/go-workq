@@ -59,7 +59,6 @@ type Queue struct {
 	maintenance      bool
 	faulted          bool
 	exhausted        bool
-	walEnvelope      Bytes
 	walObserver      walObserver
 	opened           *validatedStore
 	config           Config

@@ -6,10 +6,12 @@ import (
 )
 
 const (
-	profileSQLiteWALV1 ProfileID = "sqlite-wal-v1"
-	pageSize           Bytes     = 4096
-	maxPayload         Bytes     = 16 << 10
-	maxCodec           Bytes     = 64
+	profileSQLiteWALV1   ProfileID = "sqlite-wal-v1"
+	pageSize             Bytes     = 4096
+	maxPayload           Bytes     = 16 << 10
+	maxCodec             Bytes     = 64
+	walEnvelopeBytes     Bytes     = 64 << 20
+	maxCheckpointTrigger Bytes     = 16 << 20
 )
 
 // DefaultRuntime returns the candidate profile's defaults for a valid durable policy.
@@ -35,7 +37,7 @@ func DefaultRuntime(policy DurablePolicy) (RuntimeConfig, error) {
 			CleanupRows: 256, CleanupEncoded: 64 << 10, MaxCommandTurns: 8,
 		},
 		SQLite: SQLiteConfig{
-			Cache: 64 << 20, Mmap: 256 << 20, CheckpointTrigger: 16 << 20,
+			Cache: 64 << 20, Mmap: 256 << 20, CheckpointTrigger: maxCheckpointTrigger,
 			CheckpointInterval: time.Second, BusyTimeout: 5 * time.Second,
 		},
 	}, nil
@@ -140,7 +142,7 @@ func validateConfig(config Config) error {
 	sqlite := runtime.SQLite
 	validSQLite := sqlite.Cache >= 8<<20 && sqlite.Cache <= 64<<20 &&
 		sqlite.Mmap <= 256<<20 && sqlite.CheckpointTrigger >= 4<<20 &&
-		sqlite.CheckpointTrigger <= 16<<20 && sqlite.CheckpointInterval > 0 &&
+		sqlite.CheckpointTrigger <= maxCheckpointTrigger && sqlite.CheckpointInterval > 0 &&
 		sqlite.CheckpointInterval <= time.Second && sqlite.BusyTimeout >= 0 &&
 		sqlite.BusyTimeout <= 5*time.Second &&
 		runtime.Group.MaxDelay >= 0 && runtime.Group.MaxDelay <= 10*time.Millisecond
