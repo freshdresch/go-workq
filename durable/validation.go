@@ -21,7 +21,15 @@ type storeMetadata struct {
 }
 
 func (s *store) validateLogicalState(ctx context.Context, metadata storeMetadata) (uint64, error) {
-	counts, records, err := s.validateRecords(ctx, metadata)
+	return s.validateLogicalStateObserved(ctx, metadata, nil)
+}
+
+func (s *store) validateLogicalStateObserved(
+	ctx context.Context,
+	metadata storeMetadata,
+	observer validationObserver,
+) (uint64, error) {
+	counts, records, err := s.validateRecordsObserved(ctx, metadata, observer)
 	if err != nil {
 		return 0, err
 	}
@@ -33,7 +41,11 @@ func (s *store) validateLogicalState(ctx context.Context, metadata storeMetadata
 
 func corrupt(reason string) error { return fmt.Errorf("%s: %w", reason, ErrStorage) }
 
-func (s *store) validateSchema(ctx context.Context) (err error) {
+func (s *store) validateSchemaForProfile(ctx context.Context, profile ProfileID) (err error) {
+	ddl, err := schemaForProfile(profile)
+	if err != nil {
+		return err
+	}
 	rows, err := s.conn.QueryContext(
 		ctx,
 		"SELECT integrity_check='ok' FROM pragma_integrity_check LIMIT 1",
@@ -62,14 +74,14 @@ func (s *store) validateSchema(ctx context.Context) (err error) {
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	expected := strings.Split(strings.TrimSuffix(strings.TrimSpace(schemaDDL), ";"), ";")
+	expected := strings.Split(strings.TrimSuffix(strings.TrimSpace(ddl), ";"), ";")
 	for i := range expected {
 		expected[i] = strings.Join(strings.Fields(expected[i]), " ")
 	}
 	// Bound Go transfers before Scan. SQLite's native schema loading is separate.
 	rows, err = s.conn.QueryContext(ctx, `SELECT
  CASE WHEN length(CAST(sql AS BLOB))<=? THEN sql ELSE NULL END
- FROM sqlite_schema WHERE sql IS NOT NULL LIMIT ?`, len(schemaDDL), len(expected)+1)
+ FROM sqlite_schema WHERE sql IS NOT NULL LIMIT ?`, len(ddl), len(expected)+1)
 	if err != nil {
 		return err
 	}
@@ -105,7 +117,39 @@ func (s *store) validateSchema(ctx context.Context) (err error) {
 	return nil
 }
 
+// Validate the common table before querying metadata, including interrupted creations.
+// This bounds schema transfers without confusing an absent format with an I/O failure.
+func (s *store) validateMetadataSchema(ctx context.Context) error {
+	var isTable bool
+	var statement sql.NullString
+	err := s.conn.QueryRowContext(
+		ctx,
+		`SELECT type='table',
+ CASE WHEN length(CAST(sql AS BLOB))<=? THEN sql ELSE NULL END
+ FROM sqlite_schema WHERE name='meta' LIMIT 1`,
+		len(metadataDDL),
+	).Scan(&isTable, &statement)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrUnsupported
+	}
+	if err != nil {
+		return classifySQLError(err)
+	}
+	if !isTable || !statement.Valid {
+		return ErrUnsupported
+	}
+	expected := strings.TrimSuffix(strings.TrimSpace(metadataDDL), ";")
+	if strings.Join(strings.Fields(statement.String), " ") !=
+		strings.Join(strings.Fields(expected), " ") {
+		return ErrUnsupported
+	}
+	return nil
+}
+
 func (s *store) readMetadata(ctx context.Context) (_ storeMetadata, err error) {
+	if err := s.validateMetadataSchema(ctx); err != nil {
+		return storeMetadata{}, err
+	}
 	rows, err := s.conn.QueryContext(ctx, `SELECT CASE WHEN typeof(key)='integer' THEN key ELSE 0 END,
  typeof(value), length(value),
  CASE WHEN typeof(value)='blob' AND length(value)<=56 THEN value ELSE NULL END
@@ -149,7 +193,15 @@ func (s *store) readMetadata(ctx context.Context) (_ storeMetadata, err error) {
 	if count != len(values) {
 		return storeMetadata{}, corrupt("missing metadata")
 	}
-	for _, key := range []int{metaSchema, metaProfileVersion, metaAccountingVersion} {
+	profile := ProfileID(values[metaProfile-1])
+	version, err := schemaVersionForProfile(profile)
+	if err != nil {
+		return storeMetadata{}, err
+	}
+	if binary.BigEndian.Uint64(values[metaSchema-1]) != version {
+		return storeMetadata{}, ErrUnsupported
+	}
+	for _, key := range []int{metaProfileVersion, metaAccountingVersion} {
 		if binary.BigEndian.Uint64(values[key-1]) != 1 {
 			return storeMetadata{}, ErrUnsupported
 		}
@@ -185,6 +237,14 @@ func (s *store) readMetadata(ctx context.Context) (_ storeMetadata, err error) {
 func (s *store) validateRecords(
 	ctx context.Context,
 	metadata storeMetadata,
+) (StoreCounts, uint64, error) {
+	return s.validateRecordsObserved(ctx, metadata, nil)
+}
+
+func (s *store) validateRecordsObserved(
+	ctx context.Context,
+	metadata storeMetadata,
+	observer validationObserver,
 ) (_ StoreCounts, records uint64, err error) {
 	var counts StoreCounts
 	rows, err := s.conn.QueryContext(ctx, validationProducersQuery)
@@ -281,7 +341,17 @@ func (s *store) validateRecords(
 			if len(token) != 0 {
 				return counts, records, corrupt("pending token")
 			}
-			length, err := s.validatePayload(ctx, key, digest, metadata.policy)
+			recordObserver := validationRecordObserver{
+				observer:         observer,
+				scanDestinations: cap(key) + cap(digest) + cap(order) + cap(token) + cap(floor),
+			}
+			length, err := s.validatePayloadObserved(
+				ctx,
+				key,
+				digest,
+				metadata.policy,
+				recordObserver,
+			)
 			if err != nil {
 				return counts, records, err
 			}
@@ -334,6 +404,15 @@ func (s *store) validatePayload(
 	key, digest []byte,
 	policy DurablePolicy,
 ) (int, error) {
+	return s.validatePayloadObserved(ctx, key, digest, policy, nil)
+}
+
+func (s *store) validatePayloadObserved(
+	ctx context.Context,
+	key, digest []byte,
+	policy DurablePolicy,
+	observer validationObserver,
+) (int, error) {
 	var codecLength, payloadLength, storedLength int
 	var codecType, payloadType string
 	err := s.conn.QueryRowContext(ctx, `SELECT typeof(codec), length(codec), typeof(payload),
@@ -354,11 +433,25 @@ func (s *store) validatePayload(
 		return 0, corrupt("payload shape")
 	}
 	digestHash := newEntryDigest(uint64(codecLength))
-	if err := s.hashPayloadColumn(ctx, key, codecChunkQuery, codecLength, digestHash); err != nil {
+	if err := s.hashPayloadColumnObserved(
+		ctx,
+		key,
+		codecChunkQuery,
+		codecLength,
+		digestHash,
+		observer,
+	); err != nil {
 		return 0, err
 	}
 	writeDigestLength(digestHash, uint64(payloadLength))
-	if err := s.hashPayloadColumn(ctx, key, payloadChunkQuery, payloadLength, digestHash); err != nil {
+	if err := s.hashPayloadColumnObserved(
+		ctx,
+		key,
+		payloadChunkQuery,
+		payloadLength,
+		digestHash,
+		observer,
+	); err != nil {
 		return 0, err
 	}
 	var actual [32]byte
@@ -367,6 +460,34 @@ func (s *store) validatePayload(
 		return 0, corrupt("payload digest")
 	}
 	return payloadLength, nil
+}
+
+// validationObserver observes chunk lengths and Scan-destination BLOB capacities only.
+// Driver source copies and fixed hash state are covered separately by the layout ledger.
+// It never receives the buffer, so it cannot extend that buffer's lifetime.
+type validationObserver interface {
+	ObserveValidationChunk(query string, offset, transferred, scanDestinations int)
+}
+
+// The receipt and producer-floor projections stay live while its payload is hashed.
+// Include their Scan destinations without claiming to measure driver-owned buffers.
+type validationRecordObserver struct {
+	observer         validationObserver
+	scanDestinations int
+}
+
+func (o validationRecordObserver) ObserveValidationChunk(
+	query string,
+	offset, transferred, scanDestinations int,
+) {
+	if o.observer != nil {
+		o.observer.ObserveValidationChunk(
+			query,
+			offset,
+			transferred,
+			o.scanDestinations+scanDestinations,
+		)
+	}
 }
 
 const validationChunkBytes = 32 << 10
@@ -388,6 +509,17 @@ func (s *store) hashPayloadColumn(
 	length int,
 	digest hash.Hash,
 ) error {
+	return s.hashPayloadColumnObserved(ctx, key, query, length, digest, nil)
+}
+
+func (s *store) hashPayloadColumnObserved(
+	ctx context.Context,
+	key []byte,
+	query string,
+	length int,
+	digest hash.Hash,
+	observer validationObserver,
+) error {
 	for offset := 0; offset < length; {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -399,6 +531,9 @@ func (s *store) hashPayloadColumn(
 		}
 		if len(chunk) != size {
 			return corrupt("payload chunk length")
+		}
+		if observer != nil {
+			observer.ObserveValidationChunk(query, offset, len(chunk), cap(chunk))
 		}
 		// hash.Hash writes consume their input and never return an error.
 		_, _ = digest.Write(chunk)

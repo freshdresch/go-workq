@@ -153,3 +153,14 @@ func decodePolicy(profile ProfileID, encoded []byte) (DurablePolicy, error) {
 	}
 	return policy, nil
 }
+
+func schemaVersionForProfile(profile ProfileID) (uint64, error) {
+	switch profile {
+	case profileSQLiteWALV1:
+		return schemaVersion, nil
+	case profileSQLiteWALV2:
+		return 2, nil
+	default:
+		return 0, ErrUnsupported
+	}
+}

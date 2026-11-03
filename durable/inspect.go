@@ -142,11 +142,11 @@ func openOffline(ctx context.Context, directory string) (result *validatedStore,
 		return nil, err
 	}
 	started := time.Now()
-	if err := opened.storage.validateSchema(ctx); err != nil {
-		return nil, err
-	}
 	metadata, err := opened.storage.readMetadata(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := opened.storage.validateSchemaForProfile(ctx, metadata.policy.Profile); err != nil {
 		return nil, err
 	}
 	if err := opened.storage.configurePolicy(ctx, path, metadata.policy); err != nil {

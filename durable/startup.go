@@ -135,11 +135,12 @@ func startStoreObserved(
 		}
 	}
 	started := time.Now()
-	if err := opened.storage.validateSchema(ctx); err != nil {
-		return nil, err
-	}
 	opened.metadata, err = opened.storage.readMetadata(ctx)
 	if err != nil {
+		return nil, err
+	}
+	profile := opened.metadata.policy.Profile
+	if err := opened.storage.validateSchemaForProfile(ctx, profile); err != nil {
 		return nil, err
 	}
 	if err := opened.storage.configureExisting(ctx, path, config, opened.metadata); err != nil {
@@ -242,7 +243,7 @@ func (s *store) initializeObserved(
 			err = errors.Join(err, rollbackErr)
 		}
 	}()
-	if err := s.createSchema(boundary); err != nil {
+	if err := s.createSchemaForProfile(boundary, config.Policy.Profile); err != nil {
 		return err
 	}
 	var uuid UUID
@@ -259,6 +260,12 @@ func (s *store) initializeObserved(
 		encoded := encodeUint64(1)
 		values[key-1] = encoded[:]
 	}
+	version, err := schemaVersionForProfile(config.Policy.Profile)
+	if err != nil {
+		return err
+	}
+	encodedVersion := encodeUint64(version)
+	values[metaSchema-1] = encodedVersion[:]
 	values[metaProfile-1] = []byte(config.Policy.Profile)
 	values[metaUUID-1] = uuid[:]
 	values[metaPolicy-1] = policy[:]

@@ -9,6 +9,10 @@ import (
 
 const (
 	profileSQLiteWALV1   ProfileID = "sqlite-wal-v1"
+	profileSQLiteWALV2   ProfileID = "sqlite-wal-v2"
+	sqliteMaxLength      Bytes     = 1_000_000_000
+	sqliteMaxPages       Bytes     = 4_294_967_294
+	payloadRowOverhead   Bytes     = 128
 	pageSize             Bytes     = 4096
 	maxPayload           Bytes     = 16 << 10
 	maxCodec             Bytes     = 64
@@ -16,13 +20,14 @@ const (
 	maxCheckpointTrigger Bytes     = 16 << 20
 )
 
-// DefaultRuntime returns the installed profile's defaults for a valid durable policy.
-// PROFILE.md records the tested build and finite resource qualification scope.
+// DefaultRuntime returns valid runtime budgets without allocating policy-sized storage.
+// It preserves default counts and raises byte budgets only as required by record limits.
+// Large records can cross the default WAL refusal threshold after commitment.
 func DefaultRuntime(policy DurablePolicy) (RuntimeConfig, error) {
 	if err := validatePolicy(policy); err != nil {
 		return RuntimeConfig{}, err
 	}
-	return RuntimeConfig{
+	runtime := RuntimeConfig{
 		Ordinary: CommandBudget{Commands: 64, Retained: 8 << 20},
 		Progress: CommandBudget{Commands: 64, Retained: 256 << 10},
 		Batches: BatchLimits{
@@ -43,11 +48,39 @@ func DefaultRuntime(policy DurablePolicy) (RuntimeConfig, error) {
 			CheckpointInterval: time.Second, BusyTimeout: 5 * time.Second,
 			WALRefusal: walEnvelopeBytes,
 		},
-	}, nil
+	}
+	runtime.Batches.SubmitEncoded = max(
+		runtime.Batches.SubmitEncoded,
+		88+policy.MaxPayload+policy.MaxCodec,
+	)
+	submit, err := maximumSubmitCharge(policy, runtime.Batches)
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	lookup, err := lookupCharge(Bytes(runtime.Batches.LookupItems))
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	delivery, err := deliveryCharge(policy.MaxPayload, policy.MaxCodec)
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	scratch, err := deliveryScratchCharge(policy.MaxPayload, policy.MaxCodec)
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	runtime.Ordinary.Retained = max(runtime.Ordinary.Retained, submit, lookup)
+	runtime.Group.Encoded = max(runtime.Group.Encoded, runtime.Batches.SubmitEncoded)
+	runtime.Delivery.Retained = max(runtime.Delivery.Retained, delivery)
+	runtime.Delivery.ReadScratch = max(runtime.Delivery.ReadScratch, scratch)
+	if err := validateConfig(Config{Policy: policy, Runtime: runtime}); err != nil {
+		return RuntimeConfig{}, err
+	}
+	return runtime, nil
 }
 
 func validateProfile(profile ProfileID) error {
-	if profile != profileSQLiteWALV1 {
+	if profile != profileSQLiteWALV1 && profile != profileSQLiteWALV2 {
 		return fmt.Errorf("profile %q: %w", profile, ErrUnsupported)
 	}
 	return nil
@@ -56,6 +89,9 @@ func validateProfile(profile ProfileID) error {
 func validatePolicy(policy DurablePolicy) error {
 	if err := validateProfile(policy.Profile); err != nil {
 		return err
+	}
+	if policy.Profile == profileSQLiteWALV2 {
+		return validatePolicyV2(policy)
 	}
 	valid := policy.MaxPayload > 0 && policy.MaxPayload <= maxPayload &&
 		policy.MaxCodec <= maxCodec &&
@@ -69,6 +105,36 @@ func validatePolicy(policy DurablePolicy) error {
 		return fmt.Errorf("durable limits: %w", ErrInvalidInput)
 	}
 	return nil
+}
+
+func validatePolicyV2(policy DurablePolicy) error {
+	valid := policy.MaxPayload > 0 && policy.MaxPendingItems > 0 &&
+		policy.MaxPendingPayload >= policy.MaxPayload &&
+		policy.MaxReceipts >= policy.MaxPendingItems && policy.MaxProducers > 0 &&
+		policy.DatabaseLimit > 0 && policy.DatabaseLimit%pageSize == 0 &&
+		policy.DatabaseLimit/pageSize <= sqliteMaxPages
+	if !valid {
+		return fmt.Errorf("durable limits: %w", ErrInvalidInput)
+	}
+	row, err := payloadRowLimit(policy)
+	if err != nil {
+		return err
+	}
+	if row > sqliteMaxLength {
+		return fmt.Errorf("SQLite record length: %w", ErrInvalidInput)
+	}
+	_, err = allocationCharge(row)
+	return err
+}
+
+func payloadRowLimit(policy DurablePolicy) (Bytes, error) {
+	record, err := checkedAdd(policy.MaxPayload, policy.MaxCodec)
+	if err != nil {
+		return 0, err
+	}
+	// The four-column WITHOUT ROWID record needs at most 41 structural bytes.
+	// Keep conservative room for SQLite's serial types and integer encodings.
+	return checkedAdd(record, payloadRowOverhead)
 }
 
 func validateConfig(config Config) error {
@@ -107,7 +173,7 @@ func validateConfig(config Config) error {
 	if _, err := runtimeWorkingCharge(runtime); err != nil {
 		return err
 	}
-	// V1 record limits and uint32 batch counts bound these products in Bytes.
+	// Both formats bound record bytes below 1e9 and batch counts to uint32.
 	record := config.Policy.MaxPayload + config.Policy.MaxCodec
 	maximumSubmit := min(
 		runtime.Batches.SubmitEncoded,

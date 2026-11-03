@@ -141,6 +141,9 @@ func (s *store) configureTuning(ctx context.Context, tuning SQLiteConfig) error 
 }
 
 func (s *store) configurePolicy(ctx context.Context, path string, policy DurablePolicy) error {
+	if err := s.validateBackendRowLimit(policy); err != nil {
+		return err
+	}
 	requested := int64(policy.DatabaseLimit / pageSize)
 	var actual int64
 	statement := "PRAGMA max_page_count=" + strconv.FormatInt(requested, 10)
@@ -221,4 +224,22 @@ func classifySQLError(err error) error {
 		return err
 	}
 	return errors.Join(ErrStorage, err)
+}
+
+func (s *store) validateBackendRowLimit(policy DurablePolicy) error {
+	row, err := payloadRowLimit(policy)
+	if err != nil {
+		return err
+	}
+	return s.conn.Raw(func(raw any) error {
+		connection, ok := raw.(*sqlite3.SQLiteConn)
+		if !ok {
+			return ErrUnsupported
+		}
+		limit := connection.GetLimit(sqlite3.SQLITE_LIMIT_LENGTH)
+		if limit < 0 || row > Bytes(limit) {
+			return fmt.Errorf("effective SQLite record length %d: %w", limit, ErrUnsupported)
+		}
+		return nil
+	})
 }

@@ -361,9 +361,15 @@ func TestLayoutStartupValidationScratch(t *testing.T) {
 	for _, size := range schemaSizes {
 		schema += expectedAllocation(size)
 	}
-	// One driver source and one Scan clone of a fixed chunk coexist.
-	// Codec and payload chunks are hashed sequentially without string conversion.
-	// Small objects use the more conservative A bound, including both row layers.
+	// go-sqlite3 v1.14.52 sqlite3.go:2811 allocates each BLOB source with C.GoBytes.
+	// Go 1.27.3 database/sql/convert.go:299 clones it into a []byte Scan destination.
+	// sql.go:3086 and :3447 retain receipt sources in Rows.lastcols during payload reads.
+	// One source and one Scan clone coexist for either fixed-size chunk. Codec and
+	// payload hashing are sequential, so their chunk pairs do not accumulate.
+	// TestFormatV2StreamingAndOfflineOperations checks each column's transfer cap and
+	// separately reports Scan-destination capacities. That observation omits sources.
+	// Small objects use the conservative A bound, including both fixed row layers.
+	// This bounds algorithmic working storage, not GC-retained heap or native memory.
 	logical := Bytes(2 * validationChunkBytes)
 	logicalSizes := []int{
 		24, 32, 8, 56, 8, 24, 32, 8, 56, 8, // receipt and producer source/Scan copies
