@@ -114,18 +114,17 @@ func validateConfig(config Config) error {
 	if err != nil {
 		return err
 	}
-	payloadCharge, err := allocationCharge(config.Policy.MaxPayload)
+	deliveryRetained, err := deliveryCharge(config.Policy.MaxPayload, config.Policy.MaxCodec)
 	if err != nil {
 		return err
 	}
-	codecCharge, err := allocationCharge(config.Policy.MaxCodec)
+	deliveryScratch, err := deliveryScratchCharge(config.Policy.MaxPayload, config.Policy.MaxCodec)
 	if err != nil {
 		return err
 	}
 	valid := runtime.Batches.SubmitEncoded >= 88+record &&
-		runtime.Delivery.Retained >= payloadCharge+codecCharge+256 &&
-		runtime.Delivery.ReadScratch >= deliveryScratchCharge(
-			config.Policy.MaxPayload, config.Policy.MaxCodec) &&
+		runtime.Delivery.Retained >= deliveryRetained &&
+		runtime.Delivery.ReadScratch >= deliveryScratch &&
 		runtime.Ordinary.Retained >= submitRetained &&
 		runtime.Ordinary.Retained >= lookupRetained &&
 		runtime.Progress.Retained >= 256+128*Bytes(runtime.Batches.AckItems) &&
