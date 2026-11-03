@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "idempotency_lib",
+    srcs = ["listener.go", "protocol.go", "server.go"],
+    importpath = "github.com/freshdresch/go-data-structures/workq/examples/idempotency",
+    visibility = ["//visibility:private"],
+    deps = ["//workq/examples/internal/inventory"],
+)
+
+go_test(
+    name = "idempotency_test",
+    srcs = ["server_test.go"],
+    embed = [":idempotency_lib"],
+    deps = [
+        "//workq/examples/internal/inventory",
+        "@com_github_stretchr_testify//assert:assert",
+        "@com_github_stretchr_testify//require:require",
+    ],
+)
