@@ -285,8 +285,11 @@ func (m *imageModel) observe(event Event) error {
 	if event.Actual != event.Expected {
 		return ErrObservation
 	}
+	if event.Operation == "native-close" || event.Operation == "native-delete" {
+		return m.scan()
+	}
 	if event.Role == "main" || event.Role == "wal" {
-		promote := event.Result == 0 &&
+		promote := event.Performed && event.ActualResult == 0 &&
 			(event.Operation == "native-sync" || event.Operation == "owned-sync")
 		if err := m.capture(event.Descriptor, event.Actual, event.Role, promote); err != nil {
 			return err
@@ -295,7 +298,7 @@ func (m *imageModel) observe(event Event) error {
 	if err := m.scan(); err != nil {
 		return err
 	}
-	if event.Operation != "owned-sync" || event.Result != 0 {
+	if event.Operation != "owned-sync" || !event.Performed || event.ActualResult != 0 {
 		return nil
 	}
 	switch event.Role {

@@ -81,4 +81,13 @@ int sqlite3_libversion_number(void);
 const char *sqlite3_sourceid(void);
 void *fault_register(const char *, uintptr_t);
 int fault_unregister(void *);
+
+// Metadata remains live across a native operation, including xClose.
+typedef struct {
+ int operation, descriptor, phase, result, error_number, performed;
+ int actual_result, actual_errno, injected;
+ long long offset, length, prefix;
+ unsigned long long device, inode, parent_device, parent_inode;
+} FaultIO;
+
 #endif

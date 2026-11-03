@@ -7,11 +7,23 @@
 #include <string.h>
 #include <sys/stat.h>
 
+extern int goFaultIO(uintptr_t, char *, FaultIO *);
+
 extern int goFaultPath(uintptr_t, char *);
 extern int goFaultOpenBoundary(uintptr_t, char *, int, int);
 extern int goFaultEvent(uintptr_t, char *, int, int, int, int, int, long long, long long);
 
-extern int goFaultDelete(uintptr_t, char *, unsigned long long, unsigned long long, int, int, int);
+extern int goFaultDelete(
+    uintptr_t,
+    char *,
+    unsigned long long,
+    unsigned long long,
+    int,
+    int,
+    int,
+    int,
+    int
+);
 
 typedef struct {
     sqlite3_vfs vfs;
@@ -36,9 +48,39 @@ typedef struct {
     int descriptor;
 } UnixPrefix;
 
+static FaultIO beforeIO(FaultFile *wrapped, int operation, long long offset, long long length) {
+    FaultIO event = {.operation = operation, .descriptor = wrapped->descriptor,
+        .phase = 1, .offset = offset, .length = length};
+    event.result = goFaultIO(wrapped->owner->handle, wrapped->path, &event);
+    return event;
+}
+
+static int afterIO(FaultFile *wrapped, FaultIO *event) {
+    event->phase = 2;
+    int observed = goFaultIO(wrapped->owner->handle, wrapped->path, event);
+    return event->result != 0 ? event->result : observed;
+}
+
+static void nativeOutcome(FaultIO *event, int result) {
+    event->performed = 1;
+    event->actual_result = result;
+    event->actual_errno = result != 0 ? errno : 0;
+    if (!event->injected || result != 0) {
+        event->result = result;
+        event->error_number = event->actual_errno;
+    }
+}
+
 static int faultClose(sqlite3_file *file) {
     FaultFile *wrapped = (FaultFile *)file;
-    int result = wrapped->native->pMethods->xClose(wrapped->native);
+    FaultIO event = beforeIO(wrapped, 5, 0, 0);
+    // Cleanup always runs, even after an observer failure.
+    int before_result = event.result;
+    nativeOutcome(&event, wrapped->native->pMethods->xClose(wrapped->native));
+    if (before_result != 0) {
+        event.result = before_result;
+    }
+    int result = afterIO(wrapped, &event);
     wrapped->owner->opened--;
     free(wrapped->path);
     file->pMethods = NULL;
@@ -47,16 +89,11 @@ static int faultClose(sqlite3_file *file) {
 
 static int faultSync(sqlite3_file *file, int flags) {
     FaultFile *wrapped = (FaultFile *)file;
-    int result = goFaultEvent(wrapped->owner->handle, wrapped->path,
-        wrapped->descriptor, 2, 1, 0, 0, 0, 0);
-    int saved_errno = 0;
-    if (result == 0) {
-        result = wrapped->native->pMethods->xSync(wrapped->native, flags);
-        saved_errno = result != 0 ? errno : 0;
+    FaultIO event = beforeIO(wrapped, 2, 0, 0);
+    if (event.result == 0) {
+        nativeOutcome(&event, wrapped->native->pMethods->xSync(wrapped->native, flags));
     }
-    int observed = goFaultEvent(wrapped->owner->handle, wrapped->path,
-        wrapped->descriptor, 2, 2, result, saved_errno, 0, 0);
-    return result != 0 ? result : observed;
+    return afterIO(wrapped, &event);
 }
 
 static int faultRead(sqlite3_file *file, void *buffer, int amount, sqlite3_int64 offset) {
@@ -66,28 +103,29 @@ static int faultRead(sqlite3_file *file, void *buffer, int amount, sqlite3_int64
 
 static int faultWrite(sqlite3_file *file, const void *buffer, int amount, sqlite3_int64 offset) {
     FaultFile *wrapped = (FaultFile *)file;
-    sqlite3_file *native = wrapped->native;
-    int result = goFaultEvent(wrapped->owner->handle, wrapped->path,
-        wrapped->descriptor, 3, 1, 0, 0, offset, amount);
-    if (result == 0) {
-        result = native->pMethods->xWrite(native, buffer, amount, offset);
+    FaultIO event = beforeIO(wrapped, 3, offset, amount);
+    if (event.prefix > 0) {
+        if (event.prefix >= amount) {
+            // A short-write fixture must select an operation larger than its prefix.
+            event.result = 10;
+        } else {
+            nativeOutcome(&event, wrapped->native->pMethods->xWrite(
+                wrapped->native, buffer, (int)event.prefix, offset));
+        }
+    } else if (event.result == 0) {
+        nativeOutcome(&event, wrapped->native->pMethods->xWrite(
+            wrapped->native, buffer, amount, offset));
     }
-    int observed = goFaultEvent(wrapped->owner->handle, wrapped->path,
-        wrapped->descriptor, 3, 2, result, result != 0 ? errno : 0, offset, amount);
-    return result != 0 ? result : observed;
+    return afterIO(wrapped, &event);
 }
 
 static int faultTruncate(sqlite3_file *file, sqlite3_int64 size) {
     FaultFile *wrapped = (FaultFile *)file;
-    sqlite3_file *native = wrapped->native;
-    int result = goFaultEvent(wrapped->owner->handle, wrapped->path,
-        wrapped->descriptor, 4, 1, 0, 0, 0, size);
-    if (result == 0) {
-        result = native->pMethods->xTruncate(native, size);
+    FaultIO event = beforeIO(wrapped, 4, 0, size);
+    if (event.result == 0) {
+        nativeOutcome(&event, wrapped->native->pMethods->xTruncate(wrapped->native, size));
     }
-    int observed = goFaultEvent(wrapped->owner->handle, wrapped->path,
-        wrapped->descriptor, 4, 2, result, result != 0 ? errno : 0, 0, size);
-    return result != 0 ? result : observed;
+    return afterIO(wrapped, &event);
 }
 
 static int faultFileSize(sqlite3_file *file, sqlite3_int64 *size) {
@@ -219,12 +257,17 @@ static int faultDelete(sqlite3_vfs *vfs, const char *path, int sync) {
         return 10;
     }
     int result = goFaultDelete(((FaultVFS *)vfs)->handle, (char *)path,
-        status.st_dev, status.st_ino, 1, 0, 0);
-    if (result == 0) {
-        result = native->xDelete(native, path, sync);
+        status.st_dev, status.st_ino, 1, 0, 0, 0, 0);
+    int performed = result == 0;
+    int actual_result = 0;
+    int saved_errno = result != 0 ? EIO : 0;
+    if (performed) {
+        actual_result = native->xDelete(native, path, sync);
+        result = actual_result;
+        saved_errno = result != 0 ? errno : 0;
     }
     int observed = goFaultDelete(((FaultVFS *)vfs)->handle, (char *)path,
-        status.st_dev, status.st_ino, 2, result, result != 0 ? errno : 0);
+        status.st_dev, status.st_ino, 2, result, saved_errno, performed, actual_result);
     return result != 0 ? result : observed;
 }
 

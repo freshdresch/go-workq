@@ -13,7 +13,7 @@ go_library(
 
 go_test(
     name = "sqlitefault_test",
-    srcs = ["forward_test.go", "images_test.go"],
+    srcs = ["forward_test.go", "images_test.go", "effects_test.go"],
     gotags = ["durable_faulttest"],
     embed = [":sqlitefault"],
     deps = [

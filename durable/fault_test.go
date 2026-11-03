@@ -108,3 +108,30 @@ func TestFaultProductionSync(t *testing.T) {
 	require.ErrorIs(t, syncOwnedDescriptor(other, path), ErrStorage)
 	assert.Len(t, controller.Events(), before, "identity refusal precedes observer and Sync")
 }
+
+func TestFaultProductionDirectorySyncError(t *testing.T) {
+	for _, phase := range []string{"before", "after"} {
+		t.Run(phase, func(t *testing.T) {
+			root := t.TempDir()
+			_, controller, err := sqlitefault.Attach(root, sqlitefault.Limits{Events: 32})
+			require.NoError(t, err)
+			faultController.Store(controller)
+			t.Cleanup(func() {
+				faultController.Store(nil)
+				assert.NoError(t, controller.Close())
+			})
+			file, err := os.Open(root)
+			require.NoError(t, err)
+			t.Cleanup(func() { assert.NoError(t, file.Close()) })
+			require.NoError(t, controller.Arm("owned-sync", "directory", 1, phase, sqlitefault.SyncError))
+			require.ErrorIs(t, syncOwnedDescriptor(file, root), sqlitefault.ErrInjected)
+			events := controller.Events()
+			require.Len(t, events, 2)
+			assert.Equal(t, phase == "after", events[1].Performed)
+			assert.Zero(t, events[1].ActualResult)
+			assert.True(t, events[1].Injected)
+			assert.Equal(t, events[1].Expected, events[1].Actual)
+			require.NoError(t, syncOwnedDescriptor(file, root), "one-shot fault")
+		})
+	}
+}

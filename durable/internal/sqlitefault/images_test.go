@@ -11,10 +11,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/mattn/go-sqlite3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -28,6 +30,10 @@ func TestImageOracle(t *testing.T) {
 		name, main, wal string
 		directory       bool
 	}{
+		{"before-sync-error", "base-long", "wal-base", true},
+		{"after-sync-error", "new-main-longer", "wal-base", true},
+		{"before-directory-error", "base-long", "", true},
+		{"after-directory-error", "base-long", "created", true},
 		{"unsynced-write", "base-long", "wal-base", true},
 		{"unsynced-truncate", "base-long", "wal-base", true},
 		{"independent-sync", "new-main-longer", "wal-base", true},
@@ -71,6 +77,24 @@ func TestImageOracle(t *testing.T) {
 			}
 			_, err = os.Stat(filepath.Join(manifest.Root, "queue.sqlite3-shm"))
 			assert.ErrorIs(t, err, os.ErrNotExist)
+			if tc.name == "before-sync-error" || tc.name == "after-sync-error" ||
+				tc.name == "before-directory-error" || tc.name == "after-directory-error" {
+				replay := crashImageChild(t, tc.name)
+				assert.Equal(t, semanticEvents(manifest.Events), semanticEvents(replay.Events))
+				assert.Equal(t, manifest.DirectoryDurable, replay.DirectoryDurable)
+				_, err := Restore(replay)
+				require.NoError(t, err)
+				for _, name := range []string{"queue.sqlite3", "queue.sqlite3-wal"} {
+					original, originalErr := os.ReadFile(filepath.Join(manifest.Root, name))
+					repeated, repeatedErr := os.ReadFile(filepath.Join(replay.Root, name))
+					assert.Equal(t, errors.Is(originalErr, os.ErrNotExist),
+						errors.Is(repeatedErr, os.ErrNotExist), name)
+					if originalErr == nil {
+						require.NoError(t, repeatedErr)
+						assert.Equal(t, original, repeated, name)
+					}
+				}
+			}
 		})
 	}
 }
@@ -165,12 +189,14 @@ func runImageChild(t *testing.T, scenario string) {
 	defer func() { assert.NoError(t, lock.Close()) }() // Keep ownership until process death.
 	main := filepath.Join(root, "queue.sqlite3")
 	wal := main + "-wal"
-	if scenario == "FULL" || scenario == "NORMAL" || scenario == "native-only" {
+	if scenario == "FULL" || scenario == "NORMAL" || scenario == "native-only" ||
+		strings.HasPrefix(scenario, "native-sync-") {
 		rawImageWorkload(t, controller, name, scenario, main)
 	} else {
 		require.NoError(t, os.WriteFile(main, []byte("base-long"), 0600))
 		imageSync(t, controller, main)
-		if scenario != "create-lost" && scenario != "create-committed" {
+		if scenario != "create-lost" && scenario != "create-committed" &&
+			scenario != "before-directory-error" && scenario != "after-directory-error" {
 			require.NoError(t, os.WriteFile(wal, []byte("wal-base"), 0600))
 			imageSync(t, controller, wal)
 		}
@@ -181,6 +207,21 @@ func runImageChild(t *testing.T, scenario string) {
 			imageSync(t, controller, filepath.Dir(root))
 		}
 		switch scenario {
+		case "before-sync-error", "after-sync-error":
+			require.NoError(t, os.WriteFile(main, []byte("new-main-longer"), 0600))
+			phase := "before"
+			if scenario == "after-sync-error" {
+				phase = "after"
+			}
+			imageSyncError(t, controller, main, "main", phase)
+		case "before-directory-error", "after-directory-error":
+			require.NoError(t, os.WriteFile(wal, []byte("created"), 0600))
+			imageSync(t, controller, wal)
+			phase := "before"
+			if scenario == "after-directory-error" {
+				phase = "after"
+			}
+			imageSyncError(t, controller, root, "directory", phase)
 		case "unsynced-write", "independent-sync":
 			require.NoError(t, os.WriteFile(main, []byte("new-main-longer"), 0600))
 			require.NoError(t, os.WriteFile(wal, []byte("new-wal-longer"), 0600))
@@ -240,12 +281,77 @@ func rawImageWorkload(t *testing.T, controller *Controller, name, policy, main s
 	imageSync(t, controller, main+"-wal")
 	imageSync(t, controller, filepath.Dir(main))
 	imageSync(t, controller, filepath.Dir(filepath.Dir(main)))
+	if phase, nativeFault := strings.CutPrefix(policy, "native-sync-"); nativeFault {
+		_, err = db.ExecContext(t.Context(), "INSERT INTO records VALUES(1,11),(1,22)")
+		require.NoError(t, err)
+		baseline, err := os.ReadFile(main + "-wal")
+		require.NoError(t, err)
+		require.NotEmpty(t, baseline)
+		baselinePath := filepath.Join(controller.model.manifest.Scratch, "baseline-wal")
+		require.NoError(t, os.WriteFile(baselinePath, baseline, 0600))
+		require.NoError(t, controller.Arm("native-sync", "wal", 1, phase, SyncError))
+		_, err = db.ExecContext(t.Context(), "INSERT INTO records VALUES(2,33),(2,44)")
+		var nativeErr sqlite3.Error
+		require.ErrorAs(t, err, &nativeErr)
+		require.Equal(t, sqlite3.ErrIoErrFsync, nativeErr.ExtendedCode)
+		require.False(t, controller.Armed())
+		events := injectedEvents(controller)
+		require.Len(t, events, 1)
+		require.Equal(t, phase == "after", events[0].Performed)
+		return
+	}
 	_, err = db.ExecContext(t.Context(), "PRAGMA synchronous="+policy)
 	require.NoError(t, err)
 	_, err = db.ExecContext(t.Context(),
 		"BEGIN IMMEDIATE; INSERT INTO records VALUES(1,11),(1,22); COMMIT; "+
 			"BEGIN IMMEDIATE; INSERT INTO records VALUES(2,33),(2,44); COMMIT")
 	require.NoError(t, err)
+}
+
+func TestNativeSyncImages(t *testing.T) {
+	for _, phase := range []string{"before", "after"} {
+		t.Run(phase, func(t *testing.T) {
+			var previous []Event
+			for attempt := range 2 {
+				manifest := crashImageChild(t, "native-sync-"+phase)
+				checkImageLengths(t, manifest)
+				baseline, err := os.ReadFile(filepath.Join(manifest.Scratch, "baseline-wal"))
+				require.NoError(t, err)
+				var synchronized []byte
+				for _, image := range manifest.Images {
+					if image.Identity != manifest.Synchronized["queue.sqlite3-wal"] {
+						continue
+					}
+					synchronized, err = os.ReadFile(image.Synchronized)
+					require.NoError(t, err)
+					visible, err := os.ReadFile(image.Visible)
+					require.NoError(t, err)
+					require.Greater(t, len(visible), len(baseline))
+					if phase == "before" {
+						assert.Equal(t, baseline, synchronized, "failed sync retains prior bytes")
+					} else {
+						assert.Equal(t, visible, synchronized, "after-error retains successful sync")
+					}
+				}
+				require.NotEmpty(t, synchronized)
+				_, err = Restore(manifest)
+				require.NoError(t, err)
+				restored, err := os.ReadFile(filepath.Join(manifest.Root, "queue.sqlite3-wal"))
+				require.NoError(t, err)
+				assert.Equal(t, synchronized, restored)
+				command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestImageRecovery$")
+				command.Env = append(os.Environ(), "WORKQ_IMAGE_RECOVER="+manifest.Root,
+					"WORKQ_IMAGE_POLICY=native-sync-"+phase)
+				output, err := command.CombinedOutput()
+				require.NoError(t, err, "%s", output)
+				events := semanticEvents(manifest.Events)
+				if attempt == 1 {
+					assert.Equal(t, previous, events, "deterministic fault manifest")
+				}
+				previous = events
+			}
+		})
+	}
 }
 
 func TestRawSQLiteImages(t *testing.T) {
@@ -286,9 +392,12 @@ func TestImageRecovery(t *testing.T) {
 	}
 	require.NoError(t, rows.Err())
 	require.NoError(t, rows.Close())
-	if os.Getenv("WORKQ_IMAGE_POLICY") == "FULL" {
+	switch os.Getenv("WORKQ_IMAGE_POLICY") {
+	case "FULL", "native-sync-after":
 		assert.Equal(t, []record{{1, 11}, {1, 22}, {2, 33}, {2, 44}}, recovered)
-	} else {
+	case "native-sync-before":
+		assert.Equal(t, []record{{1, 11}, {1, 22}}, recovered)
+	default:
 		assert.Empty(t, recovered, "NORMAL group was visible but unsynchronized")
 	}
 	var integrity string
@@ -391,4 +500,97 @@ func assertVisibleImage(t *testing.T, manifest Manifest, name, expected string) 
 		return
 	}
 	t.Fatalf("missing visible image for %s", name)
+}
+
+func imageSyncError(t *testing.T, controller *Controller, path, role, phase string) {
+	t.Helper()
+	id, err := pathIdentity(path)
+	require.NoError(t, err)
+	file := controller.model.pins[id]
+	require.NotNil(t, file)
+	require.NoError(t, controller.Arm("owned-sync", role, 1, phase, SyncError))
+	after, err := controller.ObserveOwned(file, path)
+	if err == nil {
+		err = file.Sync()
+	}
+	require.ErrorIs(t, after(err), ErrInjected)
+	events := controller.Events()
+	event := events[len(events)-1]
+	assert.Equal(t, phase == "after", event.Performed)
+	assert.Zero(t, event.ActualResult)
+	assert.NotZero(t, event.Result)
+	assert.True(t, event.Injected)
+	assert.False(t, controller.Armed())
+}
+
+func TestAfterRefusalPreservesImages(t *testing.T) {
+	for _, state := range []string{"event-cap", "sticky-failure", "frozen"} {
+		for _, role := range []string{"main", "directory", "parent"} {
+			t.Run(state+"/"+role, func(t *testing.T) {
+				root, scratch := imageFixture(t)
+				main := filepath.Join(root, "queue.sqlite3")
+				require.NoError(t, os.WriteFile(main, []byte("old"), 0600))
+				model, err := newImageModel(root, scratch)
+				require.NoError(t, err)
+				t.Cleanup(func() { assert.NoError(t, model.close()) })
+				controller := &Controller{root: root, model: model, limits: Limits{Events: 32}}
+				imageSync(t, controller, main)
+				imageSync(t, controller, root)
+				path := main
+				if role == "directory" {
+					path = root
+				}
+				if role == "parent" {
+					path = filepath.Dir(root)
+				}
+				id, err := pathIdentity(path)
+				require.NoError(t, err)
+				file := model.pins[id]
+				require.NotNil(t, file)
+				event, err := controller.DescriptorEvent(path, file.Fd())
+				require.NoError(t, err)
+				event.Operation = "owned-sync"
+				require.NoError(t, controller.Arm("owned-sync", role, 1, "after", SyncError))
+				if state == "frozen" {
+					_, err := controller.Freeze()
+					require.NoError(t, err)
+				} else {
+					require.NoError(t, controller.Before(event))
+				}
+				if state == "event-cap" {
+					controller.limits.Events = len(controller.events)
+				}
+				if state == "sticky-failure" {
+					bad := Event{Actual: Identity{Inode: 1}, Expected: Identity{Inode: 2}}
+					require.ErrorIs(t, controller.Before(bad), ErrObservation)
+				}
+				before, err := json.Marshal(model.manifest)
+				require.NoError(t, err)
+				images := make(map[string][]byte)
+				for _, item := range model.manifest.Images {
+					for _, name := range []string{item.Visible, item.Synchronized} {
+						if name == "" {
+							continue
+						}
+						images[name], err = os.ReadFile(name)
+						require.NoError(t, err)
+					}
+				}
+				require.NoError(t, os.WriteFile(main, []byte("new-longer"), 0600))
+				require.NoError(t, os.WriteFile(main+"-wal", []byte("new-name"), 0600))
+				require.NoError(t, file.Sync())
+				event.Performed = true
+				assert.ErrorIs(t, controller.After(event, nil), ErrObservation)
+				after, err := json.Marshal(model.manifest)
+				require.NoError(t, err)
+				assert.JSONEq(t, string(before), string(after))
+				assert.True(t, controller.Armed(), "refusal cannot consume the pending fault")
+				for name, contents := range images {
+					actual, err := os.ReadFile(name)
+					require.NoError(t, err)
+					assert.Equal(t, contents, actual, name)
+				}
+			})
+		}
+	}
 }
