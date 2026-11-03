@@ -32,7 +32,7 @@ type engineCall struct {
 }
 
 // scriptedEngine is an engine over a slice that tests drive through hooks, so a test can place
-// a Close or a new item at an exact point between two engine calls. Like the ring queues, each
+// a Close or a new item at an exact point between two engine calls. Like the ring buffers, each
 // burst moves at most its side's batch limit. The limits start at the capacity, and
 // newTestQueue sets them to the queue's resolved limits.
 type scriptedEngine[T any] struct {
@@ -63,8 +63,8 @@ func newScriptedEngine[T any](capacity int) *scriptedEngine[T] {
 	}
 }
 
-// newTestQueue builds a Queue over fake with the given options, as New would over a ring queue,
-// and gives fake the queue's batch limits, as New gives them to a ring queue.
+// newTestQueue builds a Queue over fake with the given options, as New would over a ring buffer,
+// and gives fake the queue's batch limits, as New gives them to a ring buffer.
 func newTestQueue[T any](t *testing.T, fake *scriptedEngine[T], options ...Option) *Queue[T] {
 	t.Helper()
 	cfg, err := resolveConfig(fake.Capacity(), options)

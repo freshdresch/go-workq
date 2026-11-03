@@ -5,7 +5,7 @@ import (
 	"github.com/freshdresch/go-data-structures/ring/frontier"
 )
 
-// engine is the method set all four ring queues share.
+// engine is the method set all four ring buffers share.
 type engine[T any] interface {
 	Enqueue(item T) error
 	EnqueueBurst(items []T) (enqueued, free int)

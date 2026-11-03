@@ -139,7 +139,7 @@ total: 10100
 
 ## Choosing sides
 
-`New` picks the engine from the sides that the caller declares. The engine is the ring queue
+`New` picks the engine from the sides that the caller declares. The engine is the ring buffer
 under the package.
 
 The engines come from [`ring/frontier`](../ring/README.md), whose concurrent callers on one side
@@ -156,7 +156,7 @@ the two.
 | Neither | `frontier.MPMCQueue` |
 
 A declared single side is a promise the library cannot check. Breaking it corrupts items, as
-with the ring queues. The default is therefore MPMC, the only engine that is safe for any
+with the ring buffers. The default is therefore MPMC, the only engine that is safe for any
 caller. `Receive`, `TryReceive`, and `Consume` all belong to the consumer side, so a single
 consumer must serialize them against each other. The same rule applies to the producer calls,
 so a single producer must serialize all of them.

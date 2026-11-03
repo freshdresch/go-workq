@@ -2,7 +2,7 @@
 // of consumers acquire them. Each acquired item goes to one consumer. Both sides work in
 // batches. A caller that finds no items or no room spins briefly and then, by default, parks.
 //
-// The queue is built on the fixed-capacity ring queues in this module, which never wait. In the
+// The queue is built on the fixed-capacity ring buffers in this module, which never wait. In the
 // ring/frontier queues, concurrent callers on one side finish in any order, and the other side
 // sees a caller's work once every earlier caller on that side has finished. The ring/dpdk queues
 // follow DPDK's rte_ring. This package adds blocking calls, parking, shutdown, and backpressure.
@@ -54,7 +54,7 @@
 //
 // # Engine selection
 //
-// New picks the ring queue, called the engine, from the sides the caller declares.
+// New picks the ring buffer, called the engine, from the sides the caller declares.
 //
 //   - WithSingleProducer and WithSingleConsumer together give dpdk.SPSCQueue.
 //   - WithSingleConsumer alone gives frontier.MPSCQueue.

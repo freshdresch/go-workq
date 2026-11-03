@@ -8,7 +8,7 @@ For queue use, see the [README](README.md). The explanation follows the current 
 
 ## How waiting works
 
-The ring queue, called the **engine**, stores items and reports available items or free slots. A
+The ring buffer, called the **engine**, stores items and reports available items or free slots. A
 **publication** records a completed enqueue. A **release** records that consumed slots can be
 reused. After either operation, the caller checks whether the opposite side needs waking. A wake
 tells a caller to try again. It does not reserve an item or a slot.

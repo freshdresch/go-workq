@@ -15,7 +15,7 @@ type config struct {
 	producerWait    WaitStrategy
 }
 
-// Queue is a fixed-capacity FIFO work queue on one of the ring queues. FIFO describes acquisition
+// Queue is a fixed-capacity FIFO work queue on one of the ring buffers. FIFO describes acquisition
 // order, not concurrent API return order or handler start or completion order. Construct it with
 // New. Its zero value is unusable, and it must not be copied after use.
 type Queue[T any] struct {
