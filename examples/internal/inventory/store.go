@@ -43,8 +43,12 @@ type Inventory struct {
 
 // Store owns one dedicated SQLite connection. Calls are serialized and safe for concurrent use.
 // A commit or rollback error permanently fences the connection until owner Close and fresh Open.
+// Cancellation keeps cleanup with the caller and can wait for native SQL to finish.
+// A cancellation observed before commit rolls back. A successful commit remains success.
 // The zero value is invalid. Owners must join callers before Close.
 type Store struct {
+	failed chan struct{}
+
 	opMu         sync.Mutex
 	db           *sql.DB
 	conn         *sql.Conn
@@ -53,9 +57,10 @@ type Store struct {
 	closed       bool
 	closeErr     error
 
-	// Tests set these before use. Neither hook may replace SQL or clear failure.
-	stageHook     func(applyStage)
-	observeCommit func(error) error
+	// Tests set these before concurrent use. Hooks cannot replace SQL or clear failure.
+	stageHook        func(applyStage)
+	observeCommit    func(error) error
+	observeAdmission func()
 }
 
 // Open opens an inventory database in a private operator-owned directory.
@@ -116,11 +121,27 @@ func Open(ctx context.Context, path string, receiptLimit int) (*Store, error) {
 	if err != nil {
 		return nil, errors.Join(err, db.Close())
 	}
-	store := &Store{db: db, conn: conn, receiptLimit: receiptLimit}
+	store := &Store{
+		db: db, conn: conn, receiptLimit: receiptLimit, failed: make(chan struct{}),
+	}
 	if err := store.configureAndInitialize(ctx, created); err != nil {
 		return nil, errors.Join(err, store.Close())
 	}
 	return store, nil
+}
+
+// Failed returns a stable channel closed once when transaction outcome or cleanup is uncertain.
+// Closure asks the owner to stop and join callers before Close.
+// Normal Close does not signal failure.
+func (s *Store) Failed() <-chan struct{} {
+	return s.failed
+}
+
+func (s *Store) lockOperation() {
+	if s.observeAdmission != nil {
+		s.observeAdmission()
+	}
+	s.opMu.Lock()
 }
 
 func (s *Store) check(ctx context.Context) error {
@@ -136,6 +157,7 @@ func (s *Store) check(ctx context.Context) error {
 func (s *Store) poison(err error) error {
 	if s.failure == nil {
 		s.failure = fmt.Errorf("%w: %w", ErrUnresolved, err)
+		close(s.failed)
 	}
 	return s.failure
 }
@@ -149,7 +171,30 @@ func (s *Store) rollback(tx *sql.Tx, cause error) error {
 	return cause
 }
 
-func (s *Store) commit(tx *sql.Tx) error {
+// begin requires exclusive operation ownership, or an unpublished Store during initialization.
+// The caller must end the returned transaction before releasing that ownership.
+func (s *Store) begin(ctx context.Context) (*sql.Tx, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// Request cancellation must not transfer native cleanup to database/sql's awaitDone.
+	tx, err := s.conn.BeginTx(context.WithoutCancel(ctx), nil)
+	if err != nil {
+		if sqliteBusy(err) {
+			return nil, fmt.Errorf("begin transaction: %w: %w", ErrUnresolved, err)
+		}
+		return nil, s.poison(fmt.Errorf("begin transaction: %w", err))
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, s.rollback(tx, err)
+	}
+	return tx, nil
+}
+
+func (s *Store) commit(ctx context.Context, tx *sql.Tx) error {
+	if err := ctx.Err(); err != nil {
+		return s.rollback(tx, err)
+	}
 	err := tx.Commit()
 	if s.observeCommit != nil {
 		err = errors.Join(err, s.observeCommit(err))
@@ -163,7 +208,7 @@ func (s *Store) commit(tx *sql.Tx) error {
 // Close releases the dedicated connection and database after all callers have joined.
 // It waits for native cleanup and returns the retained closure result on repeated calls.
 func (s *Store) Close() error {
-	s.opMu.Lock()
+	s.lockOperation()
 	defer s.opMu.Unlock()
 	if s.closed {
 		return s.closeErr

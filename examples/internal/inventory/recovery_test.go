@@ -90,7 +90,7 @@ func rolledBackCommitObservation(t *testing.T, store *Store, request Request) er
 	t.Helper()
 	store.opMu.Lock()
 	defer store.opMu.Unlock()
-	tx, err := store.conn.BeginTx(t.Context(), nil)
+	tx, err := store.begin(t.Context())
 	require.NoError(t, err)
 	_, err = store.apply(t.Context(), tx, request)
 	if err != nil {
@@ -98,7 +98,7 @@ func rolledBackCommitObservation(t *testing.T, store *Store, request Request) er
 		t.Fatalf("prepare rolled-back history: %v", err)
 	}
 	require.NoError(t, tx.Rollback())
-	outcome := store.commit(tx)
+	outcome := store.commit(t.Context(), tx)
 	assert.ErrorIs(t, store.failure, ErrUnresolved, "poison must precede unlock")
 	return outcome
 }
@@ -109,10 +109,10 @@ func TestCommitObservationCannotClearFailure(t *testing.T) {
 	store.observeCommit = func(error) error { return nil }
 	store.opMu.Lock()
 	defer store.opMu.Unlock()
-	tx, err := store.conn.BeginTx(t.Context(), nil)
+	tx, err := store.begin(t.Context())
 	require.NoError(t, err)
 	require.NoError(t, tx.Rollback())
-	err = store.commit(tx)
+	err = store.commit(t.Context(), tx)
 	assert.ErrorIs(t, err, ErrUnresolved)
 	assert.ErrorIs(t, err, sql.ErrTxDone)
 }

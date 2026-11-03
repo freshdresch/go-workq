@@ -64,7 +64,7 @@ func readReceipt(ctx context.Context, tx *sql.Tx, key Key) (Receipt, bool, error
 // Conflict, rejection, and capacity errors establish no mutation by this invocation only after
 // successful cleanup. ErrUnresolved requires the owner to stop and reconcile after close/reopen.
 func (s *Store) Apply(ctx context.Context, request Request) (Result, error) {
-	s.opMu.Lock()
+	s.lockOperation()
 	defer s.opMu.Unlock()
 	if err := s.check(ctx); err != nil {
 		return Result{}, err
@@ -72,15 +72,15 @@ func (s *Store) Apply(ctx context.Context, request Request) (Result, error) {
 	if err := request.validateEnvelope(); err != nil {
 		return Result{}, err
 	}
-	tx, err := s.conn.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
-		return Result{}, fmt.Errorf("begin apply: %w: %w", ErrUnresolved, err)
+		return Result{}, fmt.Errorf("begin apply: %w", err)
 	}
 	result, err := s.apply(ctx, tx, request)
 	if err != nil {
 		return Result{}, s.rollback(tx, err)
 	}
-	if err := s.commit(tx); err != nil {
+	if err := s.commit(ctx, tx); err != nil {
 		return Result{}, err
 	}
 	s.observeStage(destinationCommitSucceeded)
@@ -176,7 +176,7 @@ func exactlyOne(result sql.Result, err error) error {
 // Absence is usable only with nil error.
 // It returns detached payload bytes and never changes a receipt's original result.
 func (s *Store) Lookup(ctx context.Context, key Key) (Receipt, bool, error) {
-	s.opMu.Lock()
+	s.lockOperation()
 	defer s.opMu.Unlock()
 	if err := s.check(ctx); err != nil {
 		return Receipt{}, false, err
@@ -184,15 +184,15 @@ func (s *Store) Lookup(ctx context.Context, key Key) (Receipt, bool, error) {
 	if err := key.validate(); err != nil {
 		return Receipt{}, false, err
 	}
-	tx, err := s.conn.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
-		return Receipt{}, false, fmt.Errorf("begin lookup: %w: %w", ErrUnresolved, err)
+		return Receipt{}, false, fmt.Errorf("begin lookup: %w", err)
 	}
 	receipt, found, err := readReceipt(ctx, tx, key)
 	if err != nil {
 		return Receipt{}, false, s.rollback(tx, fmt.Errorf("lookup: %w: %w", ErrUnresolved, err))
 	}
-	if err := s.commit(tx); err != nil {
+	if err := s.commit(ctx, tx); err != nil {
 		return Receipt{}, false, err
 	}
 	return receipt, found, nil
@@ -200,14 +200,14 @@ func (s *Store) Lookup(ctx context.Context, key Key) (Receipt, bool, error) {
 
 // Snapshot reads the persistent widget quantity and committed adjustment count.
 func (s *Store) Snapshot(ctx context.Context) (Inventory, error) {
-	s.opMu.Lock()
+	s.lockOperation()
 	defer s.opMu.Unlock()
 	if err := s.check(ctx); err != nil {
 		return Inventory{}, err
 	}
-	tx, err := s.conn.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
-		return Inventory{}, fmt.Errorf("begin snapshot: %w: %w", ErrUnresolved, err)
+		return Inventory{}, fmt.Errorf("begin snapshot: %w", err)
 	}
 	var inventory Inventory
 	err = tx.QueryRowContext(ctx,
@@ -216,7 +216,7 @@ func (s *Store) Snapshot(ctx context.Context) (Inventory, error) {
 	if err != nil {
 		return Inventory{}, s.rollback(tx, fmt.Errorf("snapshot: %w: %w", ErrUnresolved, err))
 	}
-	if err := s.commit(tx); err != nil {
+	if err := s.commit(ctx, tx); err != nil {
 		return Inventory{}, err
 	}
 	return inventory, nil

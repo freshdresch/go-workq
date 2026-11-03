@@ -55,7 +55,7 @@ func (s *Store) configureAndInitialize(ctx context.Context, created bool) error 
 			return fmt.Errorf("inventory %s is %d", setting.name, got)
 		}
 	}
-	tx, err := s.conn.BeginTx(ctx, nil)
+	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -114,5 +114,5 @@ func (s *Store) configureAndInitialize(ctx context.Context, created bool) error 
 	if incomplete != 0 {
 		return s.rollback(tx, errors.New("committed incomplete inventory receipt"))
 	}
-	return s.commit(tx)
+	return s.commit(ctx, tx)
 }

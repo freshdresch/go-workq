@@ -21,7 +21,9 @@ go_test(
     srcs = [
         "concurrency_test.go",
         "crash_test.go",
+        "health_test.go",
         "key_test.go",
+        "owned_transaction_test.go",
         "recovery_test.go",
         "request_test.go",
         "store_nocgo_test.go",
@@ -29,6 +31,7 @@ go_test(
     ],
     embed = [":inventory"],
     deps = [
+        "@com_github_mattn_go_sqlite3//:go-sqlite3",
         "@com_github_stretchr_testify//assert:assert",
         "@com_github_stretchr_testify//require:require",
     ],
