@@ -79,6 +79,7 @@ func work(
 	store *inventory.Store,
 	output io.Writer,
 	stopAfterCommit bool,
+	afterApply func(),
 ) (observations, error) {
 	var observed observations
 	for {
@@ -108,6 +109,9 @@ func work(
 			observed.duplicates++
 		} else {
 			observed.commits++
+		}
+		if afterApply != nil {
+			afterApply()
 		}
 		if stopAfterCommit {
 			return observed, fmt.Errorf(

@@ -16,7 +16,7 @@ go_binary(
 
 go_test(
     name = "transactional_test",
-    srcs = ["config_test.go", "main_test.go"],
+    srcs = ["config_test.go", "crash_test.go", "main_test.go", "recovery_test.go"],
     embed = [":transactional_lib"],
     deps = [
         "//workq/durable",

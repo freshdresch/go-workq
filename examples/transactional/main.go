@@ -93,6 +93,7 @@ func run(
 		store,
 		stdout,
 		*stopAfterCommit,
+		nil,
 	)
 	snapshotCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), operationTimeout)
 	defer cancel()
