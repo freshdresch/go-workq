@@ -2,14 +2,28 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "inventory",
-    srcs = ["key.go", "request.go"],
+    srcs = [
+        "apply.go",
+        "cgo_disabled.go",
+        "cgo_enabled.go",
+        "key.go",
+        "request.go",
+        "schema.go",
+        "store.go",
+    ],
     importpath = "github.com/freshdresch/go-data-structures/workq/examples/internal/inventory",
     visibility = ["//workq/examples:__subpackages__"],
+    deps = ["@com_github_mattn_go_sqlite3//:go-sqlite3"],
 )
 
 go_test(
     name = "inventory_test",
-    srcs = ["key_test.go", "request_test.go"],
+    srcs = [
+        "key_test.go",
+        "request_test.go",
+        "store_nocgo_test.go",
+        "store_test.go",
+    ],
     embed = [":inventory"],
     deps = [
         "@com_github_stretchr_testify//assert:assert",
