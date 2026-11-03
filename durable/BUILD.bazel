@@ -73,6 +73,7 @@ go_test(
 go_library(
     name = "durable_fault",
     testonly = True,
+    tags = ["manual"],
     srcs = [
         "ack.go",
         "fault_enabled.go",

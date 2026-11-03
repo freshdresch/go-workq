@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "sqlitefault",
     testonly = True,
+    tags = ["manual"],
     srcs = ["controller.go", "images.go", "forward.c", "abi.h"],
     cgo = True,
     copts = ["-Wall", "-Wextra", "-Werror"],
