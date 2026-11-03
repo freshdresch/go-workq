@@ -19,6 +19,7 @@ go_library(
 go_test(
     name = "inventory_test",
     srcs = [
+        "cancellation_test.go",
         "concurrency_test.go",
         "crash_test.go",
         "health_test.go",
