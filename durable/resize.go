@@ -10,6 +10,8 @@ import (
 // ownership. It preserves identity, epoch, acceptance order, records, and durability.
 // Stop and join workers before calling it. Resize never creates a missing store.
 // It uses FULL synchronization even for a store with ProcessCrash durability.
+// Migration from v1 to v2 needs temporary space for both payload tables.
+// Downgrading v2 to v1 is unsupported.
 //
 // A matching UUID and an already stored Next return Applied after validation,
 // synchronization, and closure. Otherwise Expected must match the full policy.
@@ -48,7 +50,8 @@ func resizeObserved(
 	if err = validatePolicy(request.Next); err != nil {
 		return result, err
 	}
-	if request.Expected.Profile != request.Next.Profile {
+	if request.Expected.Profile == profileSQLiteWALV2 &&
+		request.Next.Profile == profileSQLiteWALV1 {
 		return result, ErrUnsupported
 	}
 	opened, err := openOffline(ctx, directory)
@@ -121,6 +124,11 @@ func resizeObserved(
 			rollbackErr = errors.Join(ErrStorage, rollbackErr)
 		}
 		return result, errors.Join(cause, rollbackErr)
+	}
+	if request.Expected.Profile != request.Next.Profile {
+		if err = opened.migratePayloads(ctx, observer); err != nil {
+			return rollback(err)
+		}
 	}
 	policy := encodePolicy(request.Next)
 	_, err = opened.storage.conn.ExecContext(

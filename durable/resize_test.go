@@ -129,7 +129,7 @@ func TestResizeValidationAndActiveOwner(t *testing.T) {
 			case "next":
 				request.Next.MaxReceipts = 0
 			case "transition":
-				request.Next.Profile = profileSQLiteWALV2
+				request.Expected.Profile = profileSQLiteWALV2
 				category = ErrUnsupported
 			}
 			path := filepath.Join(t.TempDir(), "absent")
