@@ -57,7 +57,8 @@ type Entry struct {
 	Payload []byte
 }
 
-// DurablePolicy contains immutable logical limits and the main database cap.
+// DurablePolicy contains persistent logical limits and the main database cap.
+// Changes require exclusive offline ownership through [Resize].
 //
 //nolint:revive // DurablePolicy is the agreed public API name.
 type DurablePolicy struct {
@@ -69,6 +70,16 @@ type DurablePolicy struct {
 	MaxReceipts       Count
 	MaxProducers      Count
 	DatabaseLimit     Bytes
+}
+
+// ResizeRequest identifies the store and complete expected and requested policies.
+// Obtain UUID and Expected from [Inspect]. Every UUID, including zero, is valid.
+// Next must be a complete valid policy. If Next is already stored, Expected need
+// not match. Otherwise the entire stored policy must equal Expected.
+type ResizeRequest struct {
+	UUID     UUID
+	Expected DurablePolicy
+	Next     DurablePolicy
 }
 
 // Config separates persistent policy from per-session resources.
