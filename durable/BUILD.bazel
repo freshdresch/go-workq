@@ -120,6 +120,8 @@ go_test(
         "fault_image_test.go",
         "fault_queue_test.go",
         "fault_offline_test.go",
+        "fault_outcome_test.go",
+        "fault_startup_test.go",
         "crash_test.go",
         "delivery_test.go",
         "example_test.go",
