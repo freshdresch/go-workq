@@ -58,6 +58,8 @@ type Entry struct {
 }
 
 // DurablePolicy contains persistent logical limits and the main database cap.
+// Profile selects storage format, not a resource preset or qualification claim.
+// Select sqlite-wal-v2 for expanded limits. Open requires an exact stored-policy match.
 // Changes require exclusive offline ownership through [Resize].
 //
 //nolint:revive // DurablePolicy is the agreed public API name.
@@ -83,14 +85,16 @@ type ResizeRequest struct {
 }
 
 // Config separates persistent policy from per-session resources.
-// The zero Config is invalid. Runtime zero fields do not request defaults.
+// The zero Config is invalid. Runtime zero fields do not request defaults,
+// except SQLiteConfig.WALRefusal, whose zero selects 64 MiB.
 type Config struct {
 	Policy     DurablePolicy
 	Durability Durability
 	Runtime    RuntimeConfig
 }
 
-// RuntimeConfig bounds independently reserved work and SQLite tuning.
+// RuntimeConfig bounds independently reserved work and SQLite tuning for one Open.
+// It does not bound caller storage, native SQLite allocations, or total process memory.
 type RuntimeConfig struct {
 	Ordinary    CommandBudget
 	Progress    CommandBudget

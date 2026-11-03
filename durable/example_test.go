@@ -73,3 +73,92 @@ func submitAndAcknowledge() (err error) {
 	fmt.Println(statuses[0].Kind)
 	return nil
 }
+
+func ExampleResize() {
+	if err := resizeAndReopen(); err != nil {
+		fmt.Println(err)
+	}
+	// Output: sqlite-wal-v2 10000
+}
+
+func resizeAndReopen() (err error) {
+	directory, err := os.MkdirTemp("", "durable-resize-")
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, os.RemoveAll(directory)) }()
+	ctx := context.Background()
+	policy := durable.DurablePolicy{
+		Profile: "sqlite-wal-v1", MaxPayload: 16 << 10, MaxCodec: 64,
+		MaxPendingItems: 4096, MaxPendingPayload: 16 << 20,
+		MaxReceipts: 16384, MaxProducers: 256, DatabaseLimit: 1 << 30,
+	}
+	runtime, err := durable.DefaultRuntime(policy)
+	if err != nil {
+		return err
+	}
+	queue, err := durable.Open(ctx, directory, durable.Config{Policy: policy, Runtime: runtime})
+	if err != nil {
+		return err
+	}
+	// Real applications stop and join their workers before closing and resizing.
+	if err := queue.Close(ctx); err != nil {
+		return err
+	}
+	inspection, err := durable.Inspect(ctx, directory, nil)
+	if err != nil {
+		return err
+	}
+	next := inspection.Store.Policy
+	next.Profile = "sqlite-wal-v2"
+	next.MaxPendingItems = 10000
+	next.MaxPendingPayload = 64 << 20
+	next.MaxReceipts = 20000
+	next.MaxProducers = 512
+	next.MaxPayload = 64 << 10
+	next.MaxCodec = 256
+	next.DatabaseLimit = 2 << 30
+	request := durable.ResizeRequest{
+		UUID: inspection.Store.UUID, Expected: inspection.Store.Policy, Next: next,
+	}
+	result, resizeErr := durable.Resize(ctx, directory, request)
+	if result.Decision == durable.Unknown {
+		// Keep the store quiescent. An Inspect error is never evidence of absence.
+		observed, err := durable.Inspect(ctx, directory, nil)
+		if err != nil {
+			return errors.Join(resizeErr, err)
+		}
+		if observed.Store.UUID != request.UUID {
+			return errors.Join(resizeErr, durable.ErrConfigMismatch)
+		}
+		switch observed.Store.Policy {
+		case request.Next:
+			// Inspect established the desired policy after synchronization.
+			resizeErr = nil
+		case request.Expected:
+			// The identical request is safe to retry. This example retries only once.
+			result, resizeErr = durable.Resize(ctx, directory, request)
+			if result.Decision != durable.Applied {
+				return fmt.Errorf("resize retry (%s): %w", result.Decision, resizeErr)
+			}
+		default:
+			return errors.Join(resizeErr, durable.ErrConfigMismatch)
+		}
+	}
+	if resizeErr != nil {
+		return resizeErr
+	}
+	runtime, err = durable.DefaultRuntime(next)
+	if err != nil {
+		return err
+	}
+	// WALRefusal is per-session policy. Zero also selects this historical default.
+	runtime.SQLite.WALRefusal = 64 << 20
+	queue, err = durable.Open(ctx, directory, durable.Config{Policy: next, Runtime: runtime})
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, queue.Close(ctx)) }()
+	fmt.Println(queue.Snapshot().Store.Policy.Profile, queue.Snapshot().Store.Policy.MaxPendingItems)
+	return nil
+}

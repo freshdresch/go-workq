@@ -10,11 +10,19 @@
 // uses SQLite FULL. [ProcessCrash] uses NORMAL, which permits recent successful submissions,
 // acknowledgements, and retirement floors to roll back after OS crash or power loss.
 // Open requires matching persisted policy. Change durability only while offline with
-// [ChangeDurability]. The sqlite-wal-v1 profile has a 64 MiB operational WAL envelope.
+// [ChangeDurability]. Select sqlite-wal-v2 explicitly for expanded durable limits. Profile
+// identifies storage format, policy defines persistent capacities, and runtime settings define
+// resources for one Open. Historical qualification covers only its measured configurations.
+// [Resize] changes complete policy offline and can migrate v1 to v2, with no downgrade.
+// It uses FULL and needs temporary disk headroom during migration. Shrink must fit physical
+// pages as well as logical usage. Acknowledged history prevents payload/codec limit reductions
+// until coordinated retirement and cleanup. Reconcile Unknown Resize through [Inspect] and
+// retry the identical request while quiescent. An error never establishes the new policy.
+// SQLiteConfig.WALRefusal defaults to 64 MiB, including its explicit zero value.
 // An observation above it irreversibly stops mutations and new delivery for that session.
 // A crossing commit keeps its Applied result. Healthy Lookup and Release remain available.
 // The envelope is not a hard file-size cap. See PROFILE.md for measured resource evidence
-// and remaining release qualification.
+// and deployment qualification limits.
 //
 // Keep the same [ID], codec, and payload when retrying a source occurrence. Inputs remain
 // caller-owned and must stay unchanged during a call. The queue copies admitted input, so
