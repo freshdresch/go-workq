@@ -21,6 +21,7 @@ go_test(
         "config_test.go",
         "crash_test.go",
         "main_test.go",
+        "normal_recovery_test.go",
         "outbox_test.go",
         "recovery_test.go",
         "runner_test.go",

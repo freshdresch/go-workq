@@ -5,6 +5,9 @@ encoding, source IDs, workers, retry policy, and external effects. The queue has
 external-effect guarantee. A destination needs idempotency keyed by the source ID or participation
 in an application transaction.
 
+For cooperating destinations, see [applying external effects](external-effects.md). The guide
+connects atomic receipts, durable HTTP idempotency, source outboxes, and recovery to runnable examples.
+
 The implementation uses the `sqlite-wal-v1` profile with a 64 MiB operational WAL envelope.
 Finite software qualification, production comparison, and final independent library review
 completed on November 3, 2026, for the tested Linux amd64 build on WSL2 local ext4.
