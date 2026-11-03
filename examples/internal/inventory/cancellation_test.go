@@ -8,6 +8,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"net/url"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -337,6 +338,20 @@ func TestStoreCancellationInitializationFinalRowsClose(t *testing.T) {
 				"SELECT count(*) FROM sqlite_schema WHERE type = 'table'").Scan(&tables)
 			require.NoError(t, err)
 			assert.Zero(t, tables, "canceled creation must roll back its schema")
+			require.NoError(t, db.Close())
+			reopened, err := Open(t.Context(), path, 2)
+			assert.Nil(t, reopened)
+			require.Error(t, err)
+			_, err = os.Stat(path)
+			require.NoError(t, err, "refused initialization artifact must remain")
+			db, err = sql.Open("sqlite3", path)
+			require.NoError(t, err)
+			err = db.QueryRowContext(
+				t.Context(),
+				"SELECT count(*) FROM sqlite_schema WHERE type = 'table'",
+			).Scan(&tables)
+			require.NoError(t, err)
+			assert.Zero(t, tables, "refused retry must not initialize the artifact")
 		})
 	}
 }

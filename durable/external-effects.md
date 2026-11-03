@@ -127,6 +127,22 @@ and opens a fresh Store on the next command invocation. A new immediate transact
 recover a matching receipt or perform the still-owed atomic operation. A failed lookup proves
 neither success nor absence.
 
+If cancellation is already visible when `inventory.Open` starts with valid input, it returns
+before creating the destination. A healthy retry can initialize that fresh path. Cancellation
+that races after the initial check, initialization failure, or process death can leave the
+destination and any surviving WAL. `Open` never deletes or reinitializes an existing incomplete
+destination. Same-path restart requires a complete valid schema. An error alone does not prove
+that no business effect exists.
+
+Stop and preserve a failed destination and its WAL. Use a fresh destination path only when
+authoritative evidence establishes failed first initialization and no business effect ever ran
+there. File size or missing tables alone is not such evidence. The demo owner starts no business
+work before successful initialization, but operators must also exclude prior use and other writers.
+Otherwise, preserve the database and WAL and investigate or restore receipts and business state
+at one consistent recovery point. Do not erase a destination to make a restart error disappear.
+Preserve original source identities and bytes. A new namespace is not a recovery workaround.
+Existing complete destinations and normal commit-before-Ack recovery use their original paths.
+
 A busy begin on a healthy Store can retry the whole same-key operation. The worker checks
 `Store.Failed()` before retrying and permits at most three attempts. Identity conflicts, business
 rejections, capacity refusal, cancellation, and exhausted retries stop with unfinished work pending.

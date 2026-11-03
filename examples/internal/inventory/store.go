@@ -66,6 +66,12 @@ type Store struct {
 // Open opens an inventory database in a private operator-owned directory.
 // It requires cgo and refuses unsupported builds before touching the filesystem.
 // Only an exclusively created path is initialized. Existing files must contain the complete schema.
+// With valid input, cancellation visible at entry returns before filesystem work, so a healthy
+// retry can initialize a fresh path. Failure after creation starts can leave the database and WAL.
+// Open never deletes or reinitializes an incomplete destination. Preserve it for investigation.
+// Use a fresh path only with authoritative proof of failed first initialization and no prior
+// effects. Otherwise recover receipts and business state together, preserving original source
+// identities and bytes. An error, file size, or missing tables alone does not prove it was unused.
 // The caller must keep path outside its queue directory and must Close the returned Store.
 func Open(ctx context.Context, path string, receiptLimit int) (*Store, error) {
 	if !sqliteAvailable {
@@ -76,6 +82,9 @@ func Open(ctx context.Context, path string, receiptLimit int) (*Store, error) {
 	}
 	if path == "" {
 		return nil, fmt.Errorf("database path required: %w", ErrRejected)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {

@@ -86,6 +86,25 @@ func assertDatabase(t *testing.T, path string, want Inventory, requests ...Reque
 	}
 }
 
+func TestOpenCanceledContextPreservesFreshPath(t *testing.T) {
+	t.Parallel()
+	path := inventoryPath(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	store, err := Open(ctx, path, 2)
+	assert.Nil(t, store)
+	require.ErrorIs(t, err, context.Canceled)
+	_, err = os.Stat(path)
+	require.ErrorIs(t, err, os.ErrNotExist)
+	entries, err := os.ReadDir(filepath.Dir(path))
+	require.NoError(t, err)
+	assert.Empty(t, entries, "canceled Open must not create destination sidecars")
+
+	store = openInventory(t, path, 2)
+	require.NoError(t, store.Close())
+	assertDatabase(t, path, Inventory{Quantity: 10})
+}
+
 func TestStoreInitializationAndReopen(t *testing.T) {
 	t.Parallel()
 	path := inventoryPath(t)
