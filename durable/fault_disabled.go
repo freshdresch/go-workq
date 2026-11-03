@@ -1,4 +1,4 @@
-//go:build !durable_faulttest
+//go:build !(durable_faulttest && linux && amd64 && cgo)
 
 package durable
 
