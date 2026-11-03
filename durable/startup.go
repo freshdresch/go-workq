@@ -116,27 +116,40 @@ func startStoreObserved(
 	if err != nil {
 		return nil, errors.Join(ErrStorage, err)
 	}
-	opened.storage, err = connectStore(ctx, path, config, create)
+	opened.storage, err = openStoreConnection(ctx, path, create)
 	if err != nil {
 		return nil, err
 	}
 	if err := verifyOwnedDescriptor(opened.main, path); err != nil {
 		return nil, err
 	}
+	if err := opened.storage.bootstrap(ctx, create); err != nil {
+		return nil, err
+	}
 	if create {
+		if err := opened.storage.configurePolicy(ctx, path, config.Policy); err != nil {
+			return nil, err
+		}
 		if err := opened.storage.initializeObserved(ctx, config, observer); err != nil {
 			return nil, err
 		}
 	}
 	started := time.Now()
-	opened.metadata, opened.validation.LogicalRecords, err = opened.storage.validate(ctx)
+	if err := opened.storage.validateSchema(ctx); err != nil {
+		return nil, err
+	}
+	opened.metadata, err = opened.storage.readMetadata(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := opened.storage.configureExisting(ctx, path, config, opened.metadata); err != nil {
+		return nil, err
+	}
+	opened.validation.LogicalRecords, err = opened.storage.validateLogicalState(ctx, opened.metadata)
 	if err != nil {
 		return nil, err
 	}
 	opened.validation.Duration = time.Since(started)
-	if opened.metadata.policy != config.Policy || opened.metadata.durability != config.Durability {
-		return nil, ErrConfigMismatch
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, errors.Join(err, context.Cause(ctx))
 	}

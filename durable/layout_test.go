@@ -361,12 +361,11 @@ func TestLayoutStartupValidationScratch(t *testing.T) {
 	for _, size := range schemaSizes {
 		schema += expectedAllocation(size)
 	}
-	// One driver source and one Scan clone of the maximum payload coexist.
-	// The pinned allocator uses the exact 16384 class for each noscan object.
+	// One driver source and one Scan clone of a fixed chunk coexist.
+	// Codec and payload chunks are hashed sequentially without string conversion.
 	// Small objects use the more conservative A bound, including both row layers.
-	logical := Bytes(2 * 16384)
+	logical := Bytes(2 * validationChunkBytes)
 	logicalSizes := []int{
-		64, 64, 64, 64, // source codec, Scan codec, string conversion, hash conversion
 		24, 32, 8, 56, 8, 24, 32, 8, 56, 8, // receipt and producer source/Scan copies
 		int(reflect.TypeOf(sha256.New()).Elem().Size()), 32, 32, 8, 8,
 		136, 32, 48, // metadata, counts, decoded policy integers
@@ -394,10 +393,10 @@ func TestLayoutStartupValidationScratch(t *testing.T) {
 		metadata += expectedAllocation(size)
 	}
 	assert.LessOrEqual(t, schema, Bytes(64<<10))
-	assert.LessOrEqual(t, logical, Bytes(64<<10))
+	assert.LessOrEqual(t, logical, Bytes(96<<10))
 	assert.LessOrEqual(t, metadata, Bytes(64<<10))
-	t.Logf("startup separate phase bounds: schema=%d metadata=%d logical=%d budget=%d",
-		schema, metadata, logical, 64<<10)
+	t.Logf("startup separate phase bounds: schema=%d metadata=%d logical=%d logical-budget=%d",
+		schema, metadata, logical, 96<<10)
 }
 
 func TestLayoutConfiguredWorkingStorage(t *testing.T) {

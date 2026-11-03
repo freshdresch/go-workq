@@ -2,6 +2,7 @@ package durable
 
 import (
 	"context"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -14,6 +15,36 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func connectStore(ctx context.Context, path string, config Config, create bool) (*store, error) {
+	if ctx == nil || path == "" {
+		return nil, ErrInvalidInput
+	}
+	if err := validateConfig(config); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	storage, err := openStoreConnection(ctx, path, create)
+	if err != nil {
+		return nil, err
+	}
+	if err := storage.configure(ctx, path, config, create); err != nil {
+		return nil, errors.Join(err, classifySQLError(storage.close()))
+	}
+	return storage, nil
+}
+
+func (s *store) configure(ctx context.Context, path string, config Config, create bool) error {
+	if err := s.bootstrap(ctx, create); err != nil {
+		return err
+	}
+	if err := s.configureTuning(ctx, config.Runtime.SQLite); err != nil {
+		return err
+	}
+	return s.configurePolicy(ctx, path, config.Policy)
+}
 
 func newTestStore(t *testing.T) (*store, string) {
 	t.Helper()
