@@ -16,11 +16,19 @@ go_binary(
 
 go_test(
     name = "transactional_test",
-    srcs = ["config_test.go", "crash_test.go", "main_test.go", "recovery_test.go"],
+    srcs = [
+        "batch_test.go",
+        "config_test.go",
+        "crash_test.go",
+        "main_test.go",
+        "recovery_test.go",
+        "runner_test.go",
+    ],
     embed = [":transactional_lib"],
     deps = [
         "//workq/durable",
         "//workq/examples/internal/inventory",
+        "//workq/runner",
         "@com_github_stretchr_testify//assert:assert",
         "@com_github_stretchr_testify//require:require",
     ],
