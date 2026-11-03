@@ -14,8 +14,8 @@ const (
 	maxCheckpointTrigger Bytes     = 16 << 20
 )
 
-// DefaultRuntime returns the candidate profile's defaults for a valid durable policy.
-// The profile remains subject to production resource qualification.
+// DefaultRuntime returns the installed profile's defaults for a valid durable policy.
+// PROFILE.md records the tested build and finite resource qualification scope.
 func DefaultRuntime(policy DurablePolicy) (RuntimeConfig, error) {
 	if err := validatePolicy(policy); err != nil {
 		return RuntimeConfig{}, err

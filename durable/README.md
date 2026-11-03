@@ -6,8 +6,11 @@ external-effect guarantee. A destination needs idempotency keyed by the source I
 in an application transaction.
 
 The implementation uses the `sqlite-wal-v1` profile with a 64 MiB operational WAL envelope.
-The [profile manifest](PROFILE.md) records finite production resource measurements and initial
-deployment provision. Release qualification, production comparison, and final review remain pending.
+Finite software qualification, production comparison, and final independent library review
+completed on November 3, 2026, for the tested Linux amd64 build on WSL2 local ext4.
+The [profile manifest](PROFILE.md) records the qualification scope and initial deployment provision.
+The [benchmark report](../../benchmark/workq/durable.md) records resource and performance
+measurements.
 
 ## Build and run
 

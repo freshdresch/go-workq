@@ -1,8 +1,11 @@
 # sqlite-wal-v1 profile manifest
 
-This manifest records the installed profile and finite qualification evidence as of November 3,
-2026. Release qualification is incomplete. Production performance comparison and final independent
-review remain pending. Physical power-loss qualification was not performed.
+Finite software qualification completed on November 3, 2026, for the tested Linux amd64 build
+on WSL2 local ext4. All 20 resource cases and five reruns with the installed 64 MiB envelope passed.
+The production FULL/NORMAL comparison completed all 80 runs, and each passed its validators.
+The final independent library review reported no findings. Physical power-loss qualification
+was not performed. These results do not establish universal resource bounds, arbitrary corruption
+containment, or exactly-once external effects.
 
 ## Installed operating limits
 
@@ -51,8 +54,17 @@ headroom for WAL overshoot, shared memory, filesystem metadata, and maintenance.
 Evidence is recorded in the session's `round10a-run` directory and `wal-envelope-decision.md` under
 `/home/adam/.chatgpt/scratchpad/go-data-structures/sqlite-durable-autopilot-20261102`.
 Round 10b retains fresh build information, source hashes, test logs, and installed-envelope reruns
-in that session's `round10b` directory. These artifacts are local development evidence, not a
-portable release attestation. See [the resource report](../../benchmark/workq/durable.md).
+in that session's `round10b` directory. Final software checks and the independent library review
+are recorded in `final-checks/ASSESSMENT.md` and `final-independent-review/REPORT.md`.
+These artifacts are local development evidence, not a portable release attestation.
+
+The production comparison used commit `7e3ed78`, with ten FULL/NORMAL pairs in each of four
+workload cells. Its run manifest is `round10c-run/manifest.json` in the same session.
+The source SHA-256 was
+`de7e8377de18d6753f9ea825b8b6617199421e9bc55ff539dcfc3126b47d7f36`.
+The executable SHA-256 was
+`234f9a196174a19d2e4fad7e561278fad25c89a4462f22543ee312d472a3d449`.
+See [the benchmark report](../../benchmark/workq/durable.md) for measurements and interpretation.
 
 ## Dependency, build, and deployment scope
 
@@ -73,8 +85,11 @@ The queue explicitly sets and reads back synchronous policy rather than relying 
 Bazelisk uses the repository's Bazel 9.3.1 pin, rules_go 0.63.0, and Gazelle 0.52.2. Its dependency
 graph also uses the bundled pinned driver. Build/test success does not alone qualify another
 compiler, toolchain, allocator, optional feature set, or effective mmap limit. Recheck the memory
-ledger and resource cases for a changed supported build. Dependency security and release-graph
-assessment remain separate release requirements.
+ledger and resource cases for a changed supported build. Final Go and Bazel dependency checks
+confirmed that normal builds exclude the fault shim. The Go vulnerability scan reported no
+findings, but it does not audit the SQLite C amalgamation. Native AddressSanitizer checks passed.
+The final checks could not run clang-format, clang-tidy, or buildifier because those tools were
+unavailable.
 
 The supported deployment scope is Linux amd64 on qualified local ext4, with a private queue
 directory, working advisory locks and file/directory synchronization, and storage that honors
