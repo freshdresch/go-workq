@@ -21,16 +21,18 @@ import (
 )
 
 func TestLayoutFixedStorage(t *testing.T) {
+	config := testConfig(t)
+	working, err := runtimeWorkingCharge(config.Runtime)
+	require.NoError(t, err)
 	// These are the allocations retained by Open, plus the cleanup key array.
 	// Backend objects, path-resolution scratch, and caller-lifetime notifications are separate.
 	sizes := []uintptr{
-		unsafe.Sizeof(Queue{}), 64 * unsafe.Sizeof(command{}), 64 * unsafe.Sizeof(command{}),
-		256 * unsafe.Sizeof(claim{}), unsafe.Sizeof(workq.Queue[int]{}),
-		unsafe.Sizeof(frontier.MPMCQueue[int]{}), 3 * 256 * 8,
+		unsafe.Sizeof(Queue{}), unsafe.Sizeof(workq.Queue[int]{}),
+		unsafe.Sizeof(frontier.MPMCQueue[int]{}),
 		unsafe.Sizeof(validatedStore{}), unsafe.Sizeof(store{}), unsafe.Sizeof(directoryOwner{}),
 		unsafe.Sizeof([256][24]byte{}),
 	}
-	var total Bytes
+	total := working
 	for _, size := range sizes {
 		charge, err := allocationCharge(Bytes(size))
 		require.NoError(t, err)
@@ -73,10 +75,13 @@ func TestLayoutFixedStorage(t *testing.T) {
 	// Error-reporting graphs/formatting and caller-lifetime objects have explicit
 	// exclusions and ownership boundaries, as does the preceding path-resolution phase.
 	// This tests working storage after resolution, not all live memory.
+	// The historical measured allowance applies only to this default configuration.
 	assert.LessOrEqual(t, total, Bytes(1<<20))
 	t.Logf("fixed structures=%d auxiliaries=%d combined=%d budget=%d",
 		structural, total-structural, total, 1<<20)
-	group, err := allocationCharge(64 * Bytes(unsafe.Sizeof(groupedCommand{})))
+	group, err := allocationCharge(
+		Bytes(config.Runtime.Group.Commands) * Bytes(unsafe.Sizeof(groupedCommand{})),
+	)
 	require.NoError(t, err)
 	assert.LessOrEqual(t, group+Bytes(unsafe.Sizeof(commandGroup{})), Bytes(48<<10))
 	t.Logf("group references=%d header=%d budget=%d", group, unsafe.Sizeof(commandGroup{}), 48<<10)
@@ -393,4 +398,30 @@ func TestLayoutStartupValidationScratch(t *testing.T) {
 	assert.LessOrEqual(t, metadata, Bytes(64<<10))
 	t.Logf("startup separate phase bounds: schema=%d metadata=%d logical=%d budget=%d",
 		schema, metadata, logical, 64<<10)
+}
+
+func TestLayoutConfiguredWorkingStorage(t *testing.T) {
+	for _, items := range []Count{1, 257, 513} {
+		config := expandedRuntime(t)
+		config.Runtime.Delivery.Items = items
+		config.Runtime.Delivery.ReceiveItems = items
+		actual, err := runtimeWorkingCharge(config.Runtime)
+		require.NoError(t, err)
+		capacity, err := deliveryRingCapacity(items)
+		require.NoError(t, err)
+		sizes := []Bytes{
+			Bytes(config.Runtime.Ordinary.Commands) * Bytes(unsafe.Sizeof(command{})),
+			Bytes(config.Runtime.Progress.Commands) * Bytes(unsafe.Sizeof(command{})),
+			Bytes(items) * Bytes(unsafe.Sizeof(claim{})),
+			Bytes(capacity) * Bytes(unsafe.Sizeof(int(0))),
+			Bytes(capacity) * 8, Bytes(capacity) * 8,
+			Bytes(config.Runtime.Group.Commands) * Bytes(unsafe.Sizeof(groupedCommand{})),
+		}
+		var expected Bytes
+		for _, size := range sizes {
+			expected += expectedAllocation(int(size))
+		}
+		assert.Equal(t, expected, actual)
+		t.Logf("delivery items=%d ring=%d array allowance=%d", items, capacity, actual)
+	}
 }

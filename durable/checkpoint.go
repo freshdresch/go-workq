@@ -58,7 +58,7 @@ func (q *Queue) sampleStorage(ctx context.Context) error {
 }
 
 func (q *Queue) checkEnvelopeLocked(wal Bytes) error {
-	if wal > walEnvelopeBytes {
+	if wal > q.config.Runtime.SQLite.WALRefusal {
 		return q.enterMaintenanceLocked(WALEnvelopeExceeded)
 	}
 	return nil

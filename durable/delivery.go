@@ -254,8 +254,7 @@ func (q *Queue) dispatch(ctx context.Context) error {
 
 func (q *Queue) nextDeliveryID(ctx context.Context) (ID, bool, error) {
 	var order, encoded []byte
-	err := q.opened.storage.conn.QueryRowContext(ctx, `SELECT accept_order,id FROM receipts
- WHERE state=0 AND (accept_order,id)>(?,?) ORDER BY accept_order,id LIMIT 1`,
+	err := q.opened.storage.conn.QueryRowContext(ctx, deliveryKeyQuery,
 		q.scanOrder[:], q.scanID[:]).Scan(&order, &encoded)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ID{}, true, nil
@@ -380,3 +379,6 @@ func (q *Queue) readDelivery(
 	}
 	return delivery, nil
 }
+
+const deliveryKeyQuery = `SELECT accept_order,id FROM receipts
+ WHERE state=0 AND (accept_order,id)>(?,?) ORDER BY accept_order,id LIMIT 1`

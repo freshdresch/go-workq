@@ -113,13 +113,16 @@ type fixedWAL struct{ size Bytes }
 func (w fixedWAL) WALBytes() (Bytes, error) { return w.size, nil }
 
 func TestEnvelopeComparedBeforeCheckpointAndNeverRecovers(t *testing.T) {
-	for _, size := range []Bytes{walEnvelopeBytes - 1, walEnvelopeBytes, walEnvelopeBytes + 1} {
+	const threshold Bytes = 32 << 20
+	for _, size := range []Bytes{threshold - 1, threshold, threshold + 1} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
-			queue := groupFixture(t, testConfig(t))
+			config := testConfig(t)
+			config.Runtime.SQLite.WALRefusal = threshold
+			queue := groupFixture(t, config)
 			queue.stopping = make(chan struct{})
 			queue.walObserver = &sequenceWAL{values: []Bytes{size, 0}}
 			err := queue.beforeWrite(t.Context())
-			if size <= walEnvelopeBytes {
+			if size <= threshold {
 				require.NoError(t, err)
 				return
 			}
@@ -137,12 +140,15 @@ func (o crossEnvelopeAfterCommit) BeforeExecute() {}
 
 func (o crossEnvelopeAfterCommit) ObserveTransaction(stage string) {
 	if stage == "after-commit" {
-		o.queue.walObserver = &sequenceWAL{values: []Bytes{walEnvelopeBytes + 1, 0}}
+		threshold := o.queue.config.Runtime.SQLite.WALRefusal
+		o.queue.walObserver = &sequenceWAL{values: []Bytes{threshold + 1, 0}}
 	}
 }
 
 func TestPostCommitPressurePreservesApplied(t *testing.T) {
-	queue, err := Open(t.Context(), filepath.Join(t.TempDir(), "queue"), testConfig(t))
+	config := testConfig(t)
+	config.Runtime.SQLite.WALRefusal = 32 << 20
+	queue, err := Open(t.Context(), filepath.Join(t.TempDir(), "queue"), config)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = queue.Close(context.Background()) })
 	first := Entry{ID: ID{Sequence: 1}}
@@ -567,4 +573,16 @@ func TestPinnedReaderClosePreservesMaintenanceCategoryAndJoins(t *testing.T) {
 	reopened, err := Open(t.Context(), directory, config)
 	require.NoError(t, err, "completed join released the permanent lock")
 	require.NoError(t, reopened.Close(t.Context()))
+}
+
+func TestCallerWALRefusalUsesCachedHighSample(t *testing.T) {
+	config := testConfig(t)
+	config.Runtime.SQLite.WALRefusal = 32 << 20
+	queue := groupFixture(t, config)
+	queue.stopping = make(chan struct{})
+	queue.snapshot.Store.WALBytes = config.Runtime.SQLite.WALRefusal + 1
+	queue.walObserver = fixedWAL{}
+	require.ErrorIs(t, queue.beforeWrite(t.Context()), ErrMaintenanceRequired)
+	assert.Equal(t, config.Runtime.SQLite.WALRefusal+1, queue.Snapshot().Store.WALBytes)
+	assert.Zero(t, queue.Snapshot().Outcomes.Checkpoints)
 }

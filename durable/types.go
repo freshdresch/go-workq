@@ -132,6 +132,9 @@ type MaintenanceConfig struct {
 // Mmap, BusyTimeout, and GroupConfig.MaxDelay accept explicit zero values.
 // Cache rounds down to whole KiB and BusyTimeout to whole milliseconds in SQLite.
 type SQLiteConfig struct {
+	// WALRefusal is the observed WAL length above which the session refuses new work.
+	// Zero selects the historical 64 MiB threshold. It never disables refusal.
+	WALRefusal         Bytes
 	Cache              Bytes
 	Mmap               Bytes
 	CheckpointTrigger  Bytes
