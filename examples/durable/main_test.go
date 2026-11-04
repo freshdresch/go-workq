@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/freshdresch/go-data-structures/workq/durable"
-	"github.com/freshdresch/go-data-structures/workq/runner"
+	"github.com/freshdresch/go-workq/durable"
+	"github.com/freshdresch/go-workq/runner"
 )
 
 func openQueue(t *testing.T) (*durable.Queue, string) {

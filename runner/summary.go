@@ -6,7 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/freshdresch/go-data-structures/workq"
+	"github.com/freshdresch/go-workq/workq"
 )
 
 // ErrOmittedFailures indicates that the bounded final aggregate excludes some failure causes.

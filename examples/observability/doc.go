@@ -2,7 +2,7 @@
 // application outcomes, sampled timing, and live metrics.
 // Run the examples and their supporting tests with
 //
-//	go test ./workq/examples/observability
+//	go test ./examples/observability
 //
 // See workq/observability.md in the repository for the ownership and accounting rules.
 package observability

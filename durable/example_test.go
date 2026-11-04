@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/freshdresch/go-data-structures/workq/durable"
+	"github.com/freshdresch/go-workq/durable"
 )
 
 func ExampleQueue() {

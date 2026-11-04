@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/freshdresch/go-data-structures/workq"
+	"github.com/freshdresch/go-workq/workq"
 )
 
 // Open validates and owns directory until the returned Queue joins. Its context

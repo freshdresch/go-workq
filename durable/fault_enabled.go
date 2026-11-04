@@ -6,7 +6,7 @@ import (
 	"os"
 	"sync/atomic"
 
-	"github.com/freshdresch/go-data-structures/workq/durable/internal/sqlitefault"
+	"github.com/freshdresch/go-workq/durable/internal/sqlitefault"
 )
 
 // Tests install one fixture before starting storage and remove it after joining storage.

@@ -8,7 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/freshdresch/go-data-structures/workq"
+	"github.com/freshdresch/go-workq/workq"
 )
 
 // lastNode is the highest node number in the example tree. Node n has children 2n and 2n+1 up to

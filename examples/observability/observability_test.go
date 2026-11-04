@@ -11,7 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/freshdresch/go-data-structures/workq"
+	"github.com/freshdresch/go-workq/workq"
 )
 
 func newObservabilityQueue(t *testing.T, capacity, receiveLimit int) *workq.Queue[int] {

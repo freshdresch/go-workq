@@ -64,7 +64,7 @@ The source SHA-256 was
 `de7e8377de18d6753f9ea825b8b6617199421e9bc55ff539dcfc3126b47d7f36`.
 The executable SHA-256 was
 `234f9a196174a19d2e4fad7e561278fad25c89a4462f22543ee312d472a3d449`.
-See [the benchmark report](../../benchmark/workq/durable.md) for measurements and interpretation.
+See [the benchmark report](../benchmark/workq/durable.md) for measurements and interpretation.
 
 ## Dependency, build, and deployment scope
 

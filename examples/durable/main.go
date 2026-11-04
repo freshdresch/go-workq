@@ -11,8 +11,8 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/freshdresch/go-data-structures/workq/durable"
-	"github.com/freshdresch/go-data-structures/workq/runner"
+	"github.com/freshdresch/go-workq/durable"
+	"github.com/freshdresch/go-workq/runner"
 )
 
 func main() {

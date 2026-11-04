@@ -1,6 +1,6 @@
 # Durable work queue
 
-`workq/durable` stores bounded work in SQLite WAL across application restarts. Applications own
+`durable` stores bounded work in SQLite WAL across application restarts. Applications own
 encoding, source IDs, workers, retry policy, and external effects. The queue has no exactly-once
 external-effect guarantee. A destination needs idempotency keyed by the source ID or participation
 in an application transaction.
@@ -9,7 +9,7 @@ The implementation uses the `sqlite-wal-v1` profile with a 64 MiB operational WA
 Finite software qualification, production comparison, and final independent library review
 completed on November 3, 2026, for the tested Linux amd64 build on WSL2 local ext4.
 The [profile manifest](PROFILE.md) records the qualification scope and initial deployment provision.
-The [benchmark report](../../benchmark/workq/durable.md) records resource and performance
+The [benchmark report](../benchmark/workq/durable.md) records resource and performance
 measurements.
 
 ## Build and run
@@ -23,8 +23,8 @@ outside that scope. Physical power-loss qualification has not run.
 From the repository root, choose a new private directory on local ext4:
 
 ```sh
-go run ./workq/examples/durable -directory /path/on/ext4/demo-queue
-bazelisk run //workq/examples/durable -- -directory /path/on/ext4/demo-queue
+go run ./examples/durable -directory /path/on/ext4/demo-queue
+bazelisk run //examples/durable -- -directory /path/on/ext4/demo-queue
 ```
 
 The [runnable example](../examples/durable/main.go) submits three fixed source records, prints them,

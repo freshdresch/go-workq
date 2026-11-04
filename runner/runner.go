@@ -7,7 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/freshdresch/go-data-structures/workq"
+	"github.com/freshdresch/go-workq/workq"
 )
 
 // Runner owns admission and completion for one run. It must not be copied after use.

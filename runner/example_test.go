@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/freshdresch/go-data-structures/workq"
-	"github.com/freshdresch/go-data-structures/workq/runner"
+	"github.com/freshdresch/go-workq/runner"
+	"github.com/freshdresch/go-workq/workq"
 )
 
 func Example_finiteJob() {

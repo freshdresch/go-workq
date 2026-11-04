@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/freshdresch/go-data-structures/workq"
+	"github.com/freshdresch/go-workq/workq"
 )
 
 type recipeOutcome struct {

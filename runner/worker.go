@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/freshdresch/go-data-structures/workq"
+	"github.com/freshdresch/go-workq/workq"
 )
 
 func (r *Runner[T]) runWorker(index int, endpoint workq.DiagnosticsEndpoint[T]) {

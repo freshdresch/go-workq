@@ -9,7 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/freshdresch/go-data-structures/ring"
-	"github.com/freshdresch/go-data-structures/workq"
+
+	"github.com/freshdresch/go-workq/workq"
 )
 
 func validConfig() Config[int] {

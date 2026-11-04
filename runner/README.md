@@ -1,4 +1,4 @@
-# workq/runner
+# runner
 
 `runner` owns a bounded `workq` queue, a fixed worker group, submission admission, optional retries,
 and terminal cleanup. `New` starts a single-use runner after validating its configuration.
@@ -108,7 +108,7 @@ stages need prompt cancellation. Early publication lets a peer release resources
 terminal callback. It does not resolve arbitrary dependency cycles or noncooperative functions.
 
 Self-feeding tasks need outstanding-work accounting and inline overflow processing. Use the existing
-[workq self-feeding recipe](../lifecycle.md#self-feeding-queues). Blocking recursive submission can
+[workq self-feeding recipe](../workq/lifecycle.md#self-feeding-queues). Blocking recursive submission can
 deadlock every worker. The runner does not infer quiescence or support recursive completion rules.
 
 ## Reports and memory

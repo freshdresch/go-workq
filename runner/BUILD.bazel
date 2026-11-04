@@ -13,7 +13,7 @@ go_library(
         "summary.go",
         "worker.go",
     ],
-    importpath = "github.com/freshdresch/go-data-structures/workq/runner",
+    importpath = "github.com/freshdresch/go-workq/runner",
     visibility = ["//visibility:public"],
     deps = ["//workq"],
 )
@@ -38,7 +38,7 @@ go_test(
     ],
     embed = [":runner"],
     deps = [
-        "//ring",
+        "@com_github_freshdresch_go_data_structures//ring",
         "//workq",
         "@com_github_stretchr_testify//assert:assert",
         "@com_github_stretchr_testify//require:require",

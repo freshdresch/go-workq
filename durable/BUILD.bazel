@@ -32,7 +32,7 @@ go_library(
         "store.go",
         "types.go",
     ],
-    importpath = "github.com/freshdresch/go-data-structures/workq/durable",
+    importpath = "github.com/freshdresch/go-workq/durable",
     visibility = ["//visibility:public"],
     deps = [
         "//workq",
@@ -63,7 +63,7 @@ go_test(
     embed = [":durable"],
     deps = [
         "//workq",
-        "//ring/frontier",
+        "@com_github_freshdresch_go_data_structures//ring/frontier",
         "@com_github_mattn_go_sqlite3//:go-sqlite3",
         "@com_github_stretchr_testify//assert:assert",
         "@com_github_stretchr_testify//require:require",
@@ -104,11 +104,11 @@ go_library(
         "store.go",
         "types.go",
     ],
-    importpath = "github.com/freshdresch/go-data-structures/workq/durable",
+    importpath = "github.com/freshdresch/go-workq/durable",
     visibility = ["//visibility:public"],
     deps = [
         "//workq",
-        "//workq/durable/internal/sqlitefault",
+        "//durable/internal/sqlitefault",
         "@com_github_mattn_go_sqlite3//:go-sqlite3",
     ],
 )
@@ -145,8 +145,8 @@ go_test(
     embed = [":durable_fault"],
     deps = [
         "//workq",
-        "//workq/durable/internal/sqlitefault",
-        "//ring/frontier",
+        "//durable/internal/sqlitefault",
+        "@com_github_freshdresch_go_data_structures//ring/frontier",
         "@com_github_mattn_go_sqlite3//:go-sqlite3",
         "@com_github_stretchr_testify//assert:assert",
         "@com_github_stretchr_testify//require:require",

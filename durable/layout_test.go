@@ -16,7 +16,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/freshdresch/go-data-structures/ring/frontier"
-	"github.com/freshdresch/go-data-structures/workq"
+
+	"github.com/freshdresch/go-workq/workq"
 )
 
 func TestLayoutFixedStorage(t *testing.T) {

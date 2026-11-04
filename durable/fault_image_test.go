@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/freshdresch/go-data-structures/workq/durable/internal/sqlitefault"
+	"github.com/freshdresch/go-workq/durable/internal/sqlitefault"
 )
 
 // The seed is closed before copying. The modeled target is never opened by SQLite before Freeze.
