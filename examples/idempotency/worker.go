@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/freshdresch/go-data-structures/workq/durable"
+	"github.com/freshdresch/go-workq/durable"
 )
 
 const maxAttempts = 3

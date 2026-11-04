@@ -1,7 +1,7 @@
 # HTTP inventory destination with durable idempotency
 
 This command starts a loopback HTTP service and applies three inventory adjustments through
-`workq/durable`. The service commits each inventory change and receipt in one SQLite transaction.
+`durable`. The service commits each inventory change and receipt in one SQLite transaction.
 A matching retry returns the saved result. The worker validates the complete response before Ack.
 
 The guarantee requires all destination writers to follow this protocol, durable original source
@@ -27,7 +27,7 @@ resolve successfully. Equal and nested paths, including resolved symlink aliases
 2. Run the command.
 
    ```sh
-   go run ./workq/examples/idempotency \
+   go run ./examples/idempotency \
      -directory "$HOME/workq-idempotency-demo/queue" \
      -destination "$HOME/workq-idempotency-demo/inventory.sqlite"
    ```
@@ -44,7 +44,7 @@ logged. Output errors propagate, but output is outside the transaction and can b
 Bazel provides the same command. Use a distinct new private parent directory for a separate demo.
 
 ```sh
-bazelisk run //workq/examples/idempotency:idempotency -- \
+bazelisk run //examples/idempotency:idempotency -- \
   -directory "$HOME/workq-idempotency-demo/queue" \
   -destination "$HOME/workq-idempotency-demo/inventory.sqlite"
 ```
@@ -62,7 +62,7 @@ Use another new private parent directory on local ext4 for this demonstration.
 2. Request the deliberate interruption.
 
    ```sh
-   go run ./workq/examples/idempotency \
+   go run ./examples/idempotency \
      -directory "$HOME/workq-idempotency-interruption/queue" \
      -destination "$HOME/workq-idempotency-interruption/inventory.sqlite" \
      -stop-after-commit

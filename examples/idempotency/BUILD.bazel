@@ -13,9 +13,9 @@ go_library(
         "source.go",
         "worker.go",
     ],
-    importpath = "github.com/freshdresch/go-data-structures/workq/examples/idempotency",
+    importpath = "github.com/freshdresch/go-workq/examples/idempotency",
     visibility = ["//visibility:private"],
-    deps = ["//workq/durable", "//workq/examples/internal/inventory"],
+    deps = ["//durable", "//examples/internal/inventory"],
 )
 
 go_binary(
@@ -37,8 +37,8 @@ go_test(
     ],
     embed = [":idempotency_lib"],
     deps = [
-        "//workq/durable",
-        "//workq/examples/internal/inventory",
+        "//durable",
+        "//examples/internal/inventory",
         "@com_github_stretchr_testify//assert:assert",
         "@com_github_stretchr_testify//require:require",
     ],

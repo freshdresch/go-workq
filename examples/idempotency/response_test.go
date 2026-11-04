@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/freshdresch/go-data-structures/workq/examples/internal/inventory"
+	"github.com/freshdresch/go-workq/examples/internal/inventory"
 )
 
 func receiptFixture(t *testing.T) (inventory.Request, string, []string) {

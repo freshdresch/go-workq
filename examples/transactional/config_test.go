@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/freshdresch/go-data-structures/workq/durable"
+	"github.com/freshdresch/go-workq/durable"
 )
 
 func TestFixedQueuePolicy(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/freshdresch/go-data-structures/workq/durable"
+	"github.com/freshdresch/go-workq/durable"
 )
 
 // These tests construct valid public-API histories for possible NORMAL recovery states.

@@ -48,7 +48,9 @@ For persistent work, start with the [durable guide](durable/README.md) and its
 go run ./examples/durable -directory /path/on/ext4/demo-queue
 ```
 
-Use a new directory on a filesystem that meets the durability profile.
+Use a new directory on a filesystem that meets the durability profile. The
+[transactional example](examples/transactional/README.md) and
+[idempotency example](examples/idempotency/README.md) show how to coordinate external effects.
 The [lifecycle](workq/lifecycle.md), [overload](workq/overload.md), and
 [observability](workq/observability.md) guides link to their examples under `examples/`.
 

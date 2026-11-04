@@ -16,8 +16,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/freshdresch/go-data-structures/workq/durable"
-	"github.com/freshdresch/go-data-structures/workq/examples/internal/inventory"
+	"github.com/freshdresch/go-workq/durable"
+	"github.com/freshdresch/go-workq/examples/internal/inventory"
 )
 
 func openRecoveryQueue(t *testing.T, directory string) *durable.Queue {

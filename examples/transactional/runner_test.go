@@ -13,9 +13,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/freshdresch/go-data-structures/workq/durable"
-	"github.com/freshdresch/go-data-structures/workq/examples/internal/inventory"
-	"github.com/freshdresch/go-data-structures/workq/runner"
+	"github.com/freshdresch/go-workq/durable"
+	"github.com/freshdresch/go-workq/examples/internal/inventory"
+	"github.com/freshdresch/go-workq/runner"
 )
 
 var errFixtureUnknown = errors.New("destination observation lost, resolve original key")

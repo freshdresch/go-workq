@@ -1,6 +1,6 @@
 # Transactional inventory destination
 
-This command applies three inventory adjustments through `workq/durable`. Each destination
+This command applies three inventory adjustments through `durable`. Each destination
 transaction commits the inventory change and its receipt together. A matching retry returns the
 saved result. The worker acknowledges its queue delivery only after destination success.
 
@@ -26,7 +26,7 @@ resolve successfully. Equal and nested paths, including resolved symlink aliases
 2. Run the command.
 
    ```sh
-   go run ./workq/examples/transactional \
+   go run ./examples/transactional \
      -directory "$HOME/workq-transactional-demo/queue" \
      -destination "$HOME/workq-transactional-demo/inventory.sqlite"
    ```
@@ -42,7 +42,7 @@ logged. Output errors propagate, but output is outside the transaction and can b
 Bazel provides the same command. Use a distinct new private parent directory for a separate demo.
 
 ```sh
-bazelisk run //workq/examples/transactional:transactional -- \
+bazelisk run //examples/transactional:transactional -- \
   -directory "$HOME/workq-transactional-demo/queue" \
   -destination "$HOME/workq-transactional-demo/inventory.sqlite"
 ```
@@ -60,7 +60,7 @@ Use another new private parent directory on local ext4 for this demonstration.
 2. Request the deliberate interruption.
 
    ```sh
-   go run ./workq/examples/transactional \
+   go run ./examples/transactional \
      -directory "$HOME/workq-transactional-interruption/queue" \
      -destination "$HOME/workq-transactional-interruption/inventory.sqlite" \
      -stop-after-commit

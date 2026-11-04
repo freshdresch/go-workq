@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/freshdresch/go-data-structures/workq/examples/internal/inventory"
+	"github.com/freshdresch/go-workq/examples/internal/inventory"
 )
 
 const (

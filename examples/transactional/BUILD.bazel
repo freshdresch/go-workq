@@ -3,9 +3,9 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 go_library(
     name = "transactional_lib",
     srcs = ["main.go", "source.go", "worker.go"],
-    importpath = "github.com/freshdresch/go-data-structures/workq/examples/transactional",
+    importpath = "github.com/freshdresch/go-workq/examples/transactional",
     visibility = ["//visibility:private"],
-    deps = ["//workq/durable", "//workq/examples/internal/inventory"],
+    deps = ["//durable", "//examples/internal/inventory"],
 )
 
 go_binary(
@@ -28,9 +28,9 @@ go_test(
     ],
     embed = [":transactional_lib"],
     deps = [
-        "//workq/durable",
-        "//workq/examples/internal/inventory",
-        "//workq/runner",
+        "//durable",
+        "//examples/internal/inventory",
+        "//runner",
         "@com_github_stretchr_testify//assert:assert",
         "@com_github_stretchr_testify//require:require",
     ],

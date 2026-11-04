@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/freshdresch/go-data-structures/workq/durable"
-	"github.com/freshdresch/go-data-structures/workq/examples/internal/inventory"
+	"github.com/freshdresch/go-workq/durable"
+	"github.com/freshdresch/go-workq/examples/internal/inventory"
 )
 
 func main() {

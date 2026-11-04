@@ -1,6 +1,6 @@
 # Applying external effects with a durable queue
 
-`workq/durable` can deliver an operation again after its destination already committed it.
+`durable` can deliver an operation again after its destination already committed it.
 Make that retry safe by giving the destination a stable operation key and an atomic way to
 record both the effect and its receipt. A matching retry returns the original result.
 Acknowledge the queue only after establishing that destination success.

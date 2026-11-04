@@ -11,8 +11,8 @@ go_library(
         "schema.go",
         "store.go",
     ],
-    importpath = "github.com/freshdresch/go-data-structures/workq/examples/internal/inventory",
-    visibility = ["//workq/examples:__subpackages__"],
+    importpath = "github.com/freshdresch/go-workq/examples/internal/inventory",
+    visibility = ["//examples:__subpackages__"],
     deps = ["@com_github_mattn_go_sqlite3//:go-sqlite3"],
 )
 
@@ -33,7 +33,7 @@ go_test(
     ],
     embed = [":inventory"],
     deps = [
-        "//workq/durable",
+        "//durable",
         "@com_github_mattn_go_sqlite3//:go-sqlite3",
         "@com_github_stretchr_testify//assert:assert",
         "@com_github_stretchr_testify//require:require",
