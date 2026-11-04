@@ -81,6 +81,8 @@ case "${1:-}" in
         go_test ./durable -run="$durable_filter"
         go_test -tags=durable_faulttest ./durable -run='^TestFaultProductionDirectorySyncError$'
         go_test ./examples/durable -run='^TestRunGracefulAndIdenticalSourceRetry$'
+        go_test ./examples/transactional -run='^TestNormalHistorySurvivingPendingAbsorbsLostAck$'
+        go_test ./examples/idempotency -run='^TestStopAfterCommitAndRestart$'
         CGO_ENABLED=0 go_test ./workq -run="$queue_filter"
         CGO_ENABLED=0 go_test ./runner -run="$runner_filter"
         cd benchmark
@@ -96,9 +98,10 @@ case "${1:-}" in
             //workq/internal/diagnostics:diagnostics_test //runner:runner_test \
             //durable:durable_test //durable:durable_fault_test \
             //durable/internal/sqlitefault:sqlitefault_test \
-            //examples/durable:durable_test \
-            //examples/lifecycle:lifecycle_test \
-            //examples/observability:observability_test //examples/overload:overload_test
+            //examples/durable:durable_test //examples/idempotency:idempotency_test \
+            //examples/transactional:transactional_test //examples/lifecycle:lifecycle_test \
+            //examples/observability:observability_test //examples/overload:overload_test \
+            //examples/internal/inventory:inventory_test
         for selection in \
             '//workq:workq_test TestDiagnosticsPackageCompatibility' \
             '//runner:runner_test TestQueueExplicitSettings' \

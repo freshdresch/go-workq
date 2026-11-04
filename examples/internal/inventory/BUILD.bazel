@@ -1,0 +1,41 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "inventory",
+    srcs = [
+        "apply.go",
+        "cgo_disabled.go",
+        "cgo_enabled.go",
+        "key.go",
+        "request.go",
+        "schema.go",
+        "store.go",
+    ],
+    importpath = "github.com/freshdresch/go-workq/examples/internal/inventory",
+    visibility = ["//examples:__subpackages__"],
+    deps = ["@com_github_mattn_go_sqlite3//:go-sqlite3"],
+)
+
+go_test(
+    name = "inventory_test",
+    srcs = [
+        "cancellation_test.go",
+        "concurrency_test.go",
+        "crash_test.go",
+        "health_test.go",
+        "key_test.go",
+        "owned_transaction_test.go",
+        "queue_crash_test.go",
+        "recovery_test.go",
+        "request_test.go",
+        "store_nocgo_test.go",
+        "store_test.go",
+    ],
+    embed = [":inventory"],
+    deps = [
+        "//durable",
+        "@com_github_mattn_go_sqlite3//:go-sqlite3",
+        "@com_github_stretchr_testify//assert:assert",
+        "@com_github_stretchr_testify//require:require",
+    ],
+)

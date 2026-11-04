@@ -2,6 +2,8 @@
 // Applications own encoding, workers, retries, and external effects. The queue supplies
 // stable occurrence IDs, atomic submission and acknowledgement batches, and fenced attempts.
 // It does not provide exactly-once external effects.
+// See the repository guide durable/external-effects.md for atomic destination
+// receipts, durable HTTP idempotency, source outboxes, and runnable examples.
 //
 // Configure explicit [DurablePolicy] limits, then obtain runtime settings with
 // [DefaultRuntime]. The zero [Config] is invalid. [Synchronized], the default durability,

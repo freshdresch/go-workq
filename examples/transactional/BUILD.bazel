@@ -1,0 +1,37 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "transactional_lib",
+    srcs = ["main.go", "source.go", "worker.go"],
+    importpath = "github.com/freshdresch/go-workq/examples/transactional",
+    visibility = ["//visibility:private"],
+    deps = ["//durable", "//examples/internal/inventory"],
+)
+
+go_binary(
+    name = "transactional",
+    embed = [":transactional_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "transactional_test",
+    srcs = [
+        "batch_test.go",
+        "config_test.go",
+        "crash_test.go",
+        "main_test.go",
+        "normal_recovery_test.go",
+        "outbox_test.go",
+        "recovery_test.go",
+        "runner_test.go",
+    ],
+    embed = [":transactional_lib"],
+    deps = [
+        "//durable",
+        "//examples/internal/inventory",
+        "//runner",
+        "@com_github_stretchr_testify//assert:assert",
+        "@com_github_stretchr_testify//require:require",
+    ],
+)

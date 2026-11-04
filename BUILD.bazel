@@ -16,8 +16,10 @@ filegroup(
     name = "examples",
     srcs = [
         "//examples/durable",
+        "//examples/idempotency",
         "//examples/lifecycle",
         "//examples/observability",
         "//examples/overload",
+        "//examples/transactional",
     ],
 )
