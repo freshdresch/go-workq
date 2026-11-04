@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/freshdresch/go-data-structures/workq/durable/internal/sqlitefault"
+	"github.com/freshdresch/go-workq/durable/internal/sqlitefault"
 )
 
 type resizeImageBoundary struct {

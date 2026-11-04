@@ -1,10 +1,14 @@
 # Durable queue production measurements
 
 Resource calibration completed on November 3, 2026. All 20 cases passed their correctness checks
-with no retries or omitted runs. The 64 MiB WAL threshold is installed and passed five fresh
+with no retries or omitted runs. The historical fixed 64 MiB WAL threshold passed five fresh
 resource cases and independent review. All 80 production comparison runs passed, with ten paired
 repetitions per cell and no retries. Final software checks and independent library review also
 passed. Physical power-loss qualification was not performed.
+
+These measurements describe the historical v1 configuration and installed settings below.
+Current v2 policy limits and caller-selected runtime/WAL settings extend configuration support.
+They do not extend these measurements or their qualification claims.
 
 ## Resource protocol
 

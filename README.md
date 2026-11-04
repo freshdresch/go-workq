@@ -82,7 +82,7 @@ The script limits Go concurrency to two processes and one build package at a tim
 two jobs and one local test job. Builds have 300-second limits. Selected tests have 60-second
 internal and 120-second external limits. Lint has a 120-second limit per command.
 
-Migration acceptance also requires source/hash accounting, copied historical v1 fixture
+Migration acceptance also requires source/hash accounting, copied historical v1/v2 fixture
 checks, and separate external consumers for default runner, both explicit configuration styles,
 direct queue use, and durable persistence. These checks use migration evidence outside the
 repository and are not part of the reusable script. Run verification commands sequentially and

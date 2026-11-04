@@ -2,6 +2,8 @@
 
 The benchmark assets were copied from `github.com/freshdresch/go-data-structures`
 at original revision `0af75a87ce83467f2b92090dba80c8b764ad93bc`.
+The durable report in `workq/durable.md` includes the configurable-limits caveats from
+original revision `9fcaa3e6593040138da4ad2bb144cdd864fb92e5`.
 Their earlier history remains in that repository. The repository's Apache-2.0
 [license](../LICENSE) applies to the copied source.
 

@@ -52,7 +52,8 @@ queue_filter+='|TestDiagnosticsPackageCompatibility|TestTryPushFull|TestCloseDra
 queue_filter+='|TestReceiveWaitClosedBeatsContext|ExampleQueue)$'
 runner_filter='^(TestConfigValidation|TestQueueDefaultsAndOwnership|TestQueueExplicitSettings'
 runner_filter+='|TestFinalDiagnosticsAfterSuccessfulDrain|ExampleRunner_Shutdown)$'
-durable_filter='^(TestGoldenEncodings|TestSchemaUnsignedOrderingAndReopen)$'
+durable_filter='^(TestGoldenEncodings|TestSchemaUnsignedOrderingAndReopen'
+durable_filter+='|TestFormatCreationAndReopen)$'
 
 bazel_command=(
     bazelisk
@@ -105,7 +106,7 @@ case "${1:-}" in
         for selection in \
             '//workq:workq_test TestDiagnosticsPackageCompatibility' \
             '//runner:runner_test TestQueueExplicitSettings' \
-            '//durable:durable_test TestSchemaUnsignedOrderingAndReopen' \
+            '//durable:durable_test TestFormatCreationAndReopen' \
             '//durable:durable_fault_test TestFaultProductionDirectorySyncError'
         do
             read -r target test_name <<< "$selection"
