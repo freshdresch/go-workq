@@ -502,18 +502,6 @@ func TestInspectRejectsBootstrapDatabaseCapViolation(t *testing.T) {
 	require.NoError(t, os.Truncate(path, original.Size()))
 }
 
-func TestOfflineConfigurationErrorPreservesStorageCauses(t *testing.T) {
-	t.Parallel()
-	cause := &os.PathError{Op: "close", Path: "queue.sqlite3", Err: syscall.EIO}
-	translated := offlineConfigurationError(cause)
-	assert.NotErrorIs(t, translated, ErrConfigMismatch)
-	assert.ErrorIs(t, translated, syscall.EIO)
-	var actual *os.PathError
-	require.ErrorAs(t, translated, &actual)
-	assert.Same(t, cause, actual)
-	assert.ErrorIs(t, offlineConfigurationError(ErrUnsupported), ErrUnsupported)
-}
-
 func TestInspectSyncFailureAndCancellation(t *testing.T) {
 	for _, target := range []string{"main", "directory", "parent"} {
 		t.Run(target, func(t *testing.T) {

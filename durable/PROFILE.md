@@ -1,29 +1,93 @@
-# sqlite-wal-v1 profile manifest
+# Durable storage formats and qualification
 
-Finite software qualification completed on November 3, 2026, for the tested Linux amd64 build
+Historical v1 software qualification completed on November 3, 2026, for the tested Linux amd64 build
 on WSL2 local ext4. All 20 resource cases and five reruns with the installed 64 MiB envelope passed.
 The production FULL/NORMAL comparison completed all 80 runs, and each passed its validators.
 The final independent library review reported no findings. Physical power-loss qualification
 was not performed. These results do not establish universal resource bounds, arbitrary corruption
 containment, or exactly-once external effects.
 
-## Installed operating limits
+## Format, policy, and runtime limits
 
-The private profile in `config.go` fixes the WAL refusal envelope at 67,108,864 bytes (64 MiB).
-Every supported runtime setting uses that value. There is no calibration bypass or caller override.
-The checkpoint trigger accepts 4 through 16 MiB and defaults to 16 MiB. Before a write, the owner
-checks cached and current WAL observations before checkpointing. It also observes after each group.
-A WAL observation strictly greater than 64 MiB enters irreversible MaintenanceRequired. Equality
-is allowed. New delivery and unstarted mutations stop, including empty and no-op mutations.
-An already committed operation retains Applied with nil error. Healthy Lookup and Release remain
-available. A later lower observation does not reactivate the session.
+`sqlite-wal-v1` retains its original schema and durable ceilings. `sqlite-wal-v2` removes literal
+payload and codec ceilings from the schema. Both preserve IDs, digests, tokens, and accounting.
+Open requires an exact policy match. Offline Resize changes policy and can migrate v1 to v2.
+There is no automatic migration or downgrade. See the [usage guide](README.md) for shrink and
+Unknown reconciliation rules.
 
-The envelope is an operational refusal threshold, not a hard file-size or allocated-block cap.
-The crossing transaction can overshoot it. It reserves no disk blocks and guarantees no permanent
-Ack reserve. The main database has a separate maximum of 1 GiB, enforced through max_page_count.
-Logical maxima remain 4096 pending items, 16 MiB pending payload, 16,384 receipts, 256 lifetime
-producers, 16 KiB payloads, and 64-byte codecs. A public Submit and a group each permit at most
-2 MiB encoded work. Cache accepts 8 through 64 MiB, and mmap accepts 0 through 256 MiB.
+V2 requires positive payload, pending item/byte, receipt, producer, and main-file limits.
+MaxCodec may be zero. Pending bytes must cover one maximum payload, and receipts must cover
+pending items. Counts fit uint32. Checked `MaxPayload + MaxCodec + 128` must fit the pinned
+1,000,000,000-byte SQLite row limit and the connection's effective length limit. The main cap
+is a positive multiple of 4096, with at most 4,294,967,294 pages. These structural limits do not
+promise that configured logical capacity fits the main cap or the machine's memory.
+
+Runtime counts and byte budgets are caller-selected, subject to checked arithmetic, allocation
+representability, and minimum relationships. DefaultRuntime preserves default counts and raises
+byte budgets for larger records. SQLite cache rounds down to KiB, with a positive signed-32-bit
+KiB setting. BusyTimeout rounds down to signed-32-bit milliseconds. Mmap requires exact readback.
+The pinned Linux backend refuses requests above 2,147,418,112 bytes instead of silently clamping.
+
+The default WALRefusal is 67,108,864 bytes (64 MiB), including when its field is explicitly zero.
+Require `0 < CheckpointTrigger < WALRefusal <= MaxInt64`. The default trigger is 16 MiB.
+Cached and current observations prevent a later low sample from bypassing refusal. An observation
+strictly above the threshold irreversibly stops new delivery and unstarted mutations for that
+session. Equality is allowed. A crossing commit remains Applied. Healthy Lookup and Release
+remain available. The threshold reserves no disk and is not a hard file-size or allocated-block
+cap. It does not apply to offline migration. There is no permanent Ack reserve.
+
+## Parameterized working-memory ledger
+
+Let `A(n) = 2 * roundUp(n, 8)` be the supported-build allocator allowance, with `A(0) = 0`.
+Let O and P be Ordinary.Commands and Progress.Commands, D be Delivery.Items, G be Group.Commands,
+and R be D rounded up to a power of two. Sizes below are `unsafe.Sizeof` on the qualified build.
+The configuration-dependent array allowance is:
+
+```
+A(O * sizeof(command)) + A(P * sizeof(command))
++ A(D * sizeof(claim))
++ A(R * sizeof(int)) + 2 * A(R * sizeof(uint64))
++ A(G * sizeof(groupedCommand))
+```
+
+Add Ordinary.Retained, Progress.Retained, Delivery.Retained, and Delivery.ReadScratch for admitted
+work and live delivery storage. Reservations precede input copying and survive abandoned calls
+until the owner releases them. Receive descriptor allowances are included in delivery accounting.
+Add fixed queue/store/owner headers, paths, channels, timers, and the 256-by-24-byte cleanup key
+buffer with allocator rounding. Larger cleanup quotas reuse that buffer in bounded chunks.
+`layout_test.go` checks the arrays and fixed objects. Its historical 1 MiB fixed-storage and
+48 KiB group assertions apply only to the default configuration, not arbitrary runtime counts.
+
+Startup and offline validation run separately from live pools. They transfer codec and payload
+through fixed 32 KiB chunks, independent of backlog and maximum record size. One driver source
+and one Scan copy can coexist, so allow two chunks plus fixed record, hash, metadata, and schema
+scratch. Migration transfers at most 256 keys at a time and copies payload rows inside SQLite.
+The validation traversal can take time proportional to history.
+
+This ledger describes queue-owned algorithmic working storage. It excludes caller input and
+retained delivery storage, waiting caller lifetimes, diagnostic graphs/formatting, path-resolution
+temporaries, GC-retained garbage, and native SQLite/pager/integrity/schema allocations. See the
+[ownership boundaries](README.md) for those exclusions. Cache and mmap are separate backend
+exposure. Neither this ledger nor acceptance of a representable configuration bounds total RSS.
+
+## Finite expanded-policy check
+
+`TestLargeLimitsRealAPI` uses v2 with 10,000 pending items, 64 MiB pending bytes, 20,000 receipts,
+512 producers, 64 KiB payloads, 256-byte codecs, and a 2 GiB main cap. With default runtime counts,
+it submits 9000 entries over 300 producers and observes 18,462,721 pending payload bytes.
+One payload has 32,769 bytes and codecs have 65 bytes. Close, Inspect, reopen, and bounded
+Receive/Ack calls verify identities and digests. A second 9000-entry wave establishes 18,000
+retained acknowledged receipts before retirement and cleanup. This finite correctness check
+extends behavioral coverage. It does not measure RSS, disk peaks, throughput, or latency.
+
+## Historical installed configuration
+
+The campaign below used v1 with 4096 pending items, 16 MiB pending payload, 16,384 receipts,
+256 lifetime producers, 16 KiB payloads, 64-byte codecs, and a 1 GiB main cap. Submit and group
+encoded limits were 2 MiB. Cache accepted 8 through 64 MiB and mmap 0 through 256 MiB in that
+implementation. The installed WAL threshold was fixed at 64 MiB, with a 4 through 16 MiB
+checkpoint trigger. Those historical runtime ceilings no longer restrict either storage format.
+The numbers and provenance below remain evidence only for those tested settings.
 
 ## Calibration and provision
 
@@ -35,9 +99,10 @@ checkpoint trigger by 4,168,896 bytes. The largest positive command-boundary WAL
 4,812,160 bytes. That change is not an exact transaction-growth measurement because checkpoints
 and cleanup can intervene.
 
-The installed envelope is about 3.20 times the largest sampled WAL and leaves 46,162,752 bytes
-above that observation. It is 48 MiB above the largest supported checkpoint trigger. Those margins
-come from finite calibration and an explicit operating decision, not an all-history growth proof.
+The historical installed envelope was about 3.20 times the largest sampled WAL and leaves
+46,162,752 bytes above that observation. It was 48 MiB above the largest then-supported
+checkpoint trigger. Those margins come from finite calibration and an explicit operating
+decision, not an all-history growth proof.
 
 The sampled process RSS maximum was 102,961,152 bytes, and the Go HeapAlloc maximum was
 42,657,544 bytes. These measurements include the harness and can miss peaks. Native heap
@@ -45,11 +110,12 @@ attribution was unavailable. Repeated churn showed reuse at measured cycle bound
 lifecycle variants reclaimed the main file from 17,629,184 to 53,248 bytes in two bounded Maintain
 calls while preserving their logical checks.
 
-For one queue at the tested ceilings, the initial deployment recommendation is 512 MiB process
-memory plus application-owned work and diagnostic/path-resolution allowance, and 1.25 GiB available
-local disk. These are starting provisions, not universal RSS or disk guarantees. Cache and mmap
-maxima alone permit up to 320 MiB of pager/mapping exposure. Monitor the actual workload and keep
-headroom for WAL overshoot, shared memory, filesystem metadata, and maintenance.
+For one queue at those historical tested ceilings, the initial deployment recommendation was 512
+MiB process memory plus application-owned work and diagnostic/path-resolution allowance, and
+1.25 GiB available local disk. These are starting provisions, not universal RSS or disk
+guarantees. The tested cache and mmap maxima alone permitted up to 320 MiB of pager/mapping
+exposure. Monitor the actual workload and keep headroom for WAL overshoot, shared memory,
+filesystem metadata, and maintenance.
 
 Evidence is recorded in the session's `round10a-run` directory and `wal-envelope-decision.md` under
 `/home/adam/.chatgpt/scratchpad/go-data-structures/sqlite-durable-autopilot-20261102`.

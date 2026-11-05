@@ -161,6 +161,8 @@ type DiskStats struct {
 	NativeBytes    Bytes
 	Cache          Bytes
 	Mmap           Bytes
+	// WALRefusal is the effective observed-WAL refusal threshold for this session.
+	WALRefusal Bytes
 }
 
 // CheckpointStats records the latest explicit checkpoint's actual result fields.

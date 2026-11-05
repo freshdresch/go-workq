@@ -8,7 +8,7 @@ import (
 )
 
 // cleanupTurn either removes eligible receipts or clears an empty marker. Its
-// fixed key buffer belongs to the fixed queue allowance, not to a caller pool.
+// fixed key buffer is independent of the configured turn quota.
 func (q *Queue) cleanupTurn(ctx context.Context) error {
 	if err := q.beforeWrite(ctx); err != nil {
 		return err
@@ -59,7 +59,7 @@ func (q *Queue) deleteRetiredReceipts(ctx context.Context) (storeMetadata, error
 	conn := q.opened.storage.conn
 	var producer, floor []byte
 	err := conn.QueryRowContext(ctx,
-		"SELECT producer,retired_through FROM producers WHERE cleanup_needed=1 ORDER BY producer LIMIT 1",
+		cleanupProducerQuery,
 	).Scan(&producer, &floor)
 	if err != nil {
 		return storeMetadata{}, err
@@ -73,36 +73,22 @@ func (q *Queue) deleteRetiredReceipts(ctx context.Context) (storeMetadata, error
 	copy(upper[16:], floor)
 	limits := q.config.Runtime.Maintenance
 	// An acknowledged receipt occupies 121 encoded bytes, plus 26 for its marker.
-	limit := min(int(limits.CleanupRows), int((limits.CleanupEncoded-26)/121))
-	rows, err := conn.QueryContext(ctx,
-		"SELECT id FROM receipts WHERE id>=? AND id<=? AND state=1 ORDER BY id LIMIT ?",
-		lower[:], upper[:], limit)
-	if err != nil {
-		return storeMetadata{}, err
-	}
-	var keys [256][24]byte
-	count := 0
-	for rows.Next() {
-		var encoded []byte
-		if err := rows.Scan(&encoded); err != nil {
-			return storeMetadata{}, errors.Join(err, rows.Close())
-		}
-		if len(encoded) != 24 {
-			return storeMetadata{}, errors.Join(ErrStorage, rows.Close())
-		}
-		copy(keys[count][:], encoded)
-		count++
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return storeMetadata{}, err
-	}
-	for index := range count {
-		_, err := conn.ExecContext(ctx, "DELETE FROM receipts WHERE id=?", keys[index][:])
+	remaining := min(Bytes(limits.CleanupRows), (limits.CleanupEncoded-26)/121)
+	for remaining > 0 {
+		limit := int(min(remaining, 256))
+		count, err := q.deleteRetiredReceiptChunk(ctx, lower, upper, limit)
 		if err != nil {
 			return storeMetadata{}, err
 		}
+		if Count(count) > metadata.counts.Receipts {
+			return storeMetadata{}, ErrStorage
+		}
+		metadata.counts.Receipts -= Count(count)
+		remaining -= Bytes(count)
+		if count < limit {
+			break
+		}
 	}
-	metadata.counts.Receipts -= Count(count)
 	var exists int
 	err = conn.QueryRowContext(ctx,
 		"SELECT 1 FROM receipts WHERE id>=? AND id<=? AND state=1 LIMIT 1",
@@ -112,9 +98,62 @@ func (q *Queue) deleteRetiredReceipts(ctx context.Context) (storeMetadata, error
 			"UPDATE producers SET cleanup_needed=0 WHERE producer=?", producer); err != nil {
 			return storeMetadata{}, err
 		}
+		if metadata.counts.CleanupMarkers == 0 {
+			return storeMetadata{}, ErrStorage
+		}
 		metadata.counts.CleanupMarkers--
 	} else if err != nil {
 		return storeMetadata{}, err
 	}
 	return metadata, nil
 }
+
+func (q *Queue) deleteRetiredReceiptChunk(
+	ctx context.Context,
+	lower, upper [24]byte,
+	limit int,
+) (int, error) {
+	var keys [256][24]byte
+	rows, err := q.opened.storage.conn.QueryContext(
+		ctx,
+		cleanupReceiptQuery,
+		lower[:],
+		upper[:],
+		limit,
+	)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for rows.Next() {
+		var encoded []byte
+		if err := rows.Scan(&encoded); err != nil {
+			return 0, errors.Join(err, rows.Close())
+		}
+		if len(encoded) != 24 || count == len(keys) {
+			return 0, errors.Join(ErrStorage, rows.Close())
+		}
+		copy(keys[count][:], encoded)
+		count++
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return 0, err
+	}
+	for index := range count {
+		_, err := q.opened.storage.conn.ExecContext(
+			ctx,
+			"DELETE FROM receipts WHERE id=?",
+			keys[index][:],
+		)
+		if err != nil {
+			return 0, err
+		}
+	}
+	return count, nil
+}
+
+const cleanupProducerQuery = `SELECT producer,retired_through FROM producers
+ WHERE cleanup_needed=1 ORDER BY producer LIMIT 1`
+
+const cleanupReceiptQuery = `SELECT id FROM receipts
+ WHERE id>=? AND id<=? AND state=1 ORDER BY id LIMIT ?`

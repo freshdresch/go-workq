@@ -116,27 +116,41 @@ func startStoreObserved(
 	if err != nil {
 		return nil, errors.Join(ErrStorage, err)
 	}
-	opened.storage, err = connectStore(ctx, path, config, create)
+	opened.storage, err = openStoreConnection(ctx, path, create)
 	if err != nil {
 		return nil, err
 	}
 	if err := verifyOwnedDescriptor(opened.main, path); err != nil {
 		return nil, err
 	}
+	if err := opened.storage.bootstrap(ctx, create); err != nil {
+		return nil, err
+	}
 	if create {
+		if err := opened.storage.configurePolicy(ctx, path, config.Policy); err != nil {
+			return nil, err
+		}
 		if err := opened.storage.initializeObserved(ctx, config, observer); err != nil {
 			return nil, err
 		}
 	}
 	started := time.Now()
-	opened.metadata, opened.validation.LogicalRecords, err = opened.storage.validate(ctx)
+	opened.metadata, err = opened.storage.readMetadata(ctx)
+	if err != nil {
+		return nil, err
+	}
+	profile := opened.metadata.policy.Profile
+	if err := opened.storage.validateSchemaForProfile(ctx, profile); err != nil {
+		return nil, err
+	}
+	if err := opened.storage.configureExisting(ctx, path, config, opened.metadata); err != nil {
+		return nil, err
+	}
+	opened.validation.LogicalRecords, err = opened.storage.validateLogicalState(ctx, opened.metadata)
 	if err != nil {
 		return nil, err
 	}
 	opened.validation.Duration = time.Since(started)
-	if opened.metadata.policy != config.Policy || opened.metadata.durability != config.Durability {
-		return nil, ErrConfigMismatch
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, errors.Join(err, context.Cause(ctx))
 	}
@@ -229,7 +243,7 @@ func (s *store) initializeObserved(
 			err = errors.Join(err, rollbackErr)
 		}
 	}()
-	if err := s.createSchema(boundary); err != nil {
+	if err := s.createSchemaForProfile(boundary, config.Policy.Profile); err != nil {
 		return err
 	}
 	var uuid UUID
@@ -246,6 +260,12 @@ func (s *store) initializeObserved(
 		encoded := encodeUint64(1)
 		values[key-1] = encoded[:]
 	}
+	version, err := schemaVersionForProfile(config.Policy.Profile)
+	if err != nil {
+		return err
+	}
+	encodedVersion := encodeUint64(version)
+	values[metaSchema-1] = encodedVersion[:]
 	values[metaProfile-1] = []byte(config.Policy.Profile)
 	values[metaUUID-1] = uuid[:]
 	values[metaPolicy-1] = policy[:]

@@ -7,10 +7,14 @@ const commandBase Bytes = 256
 // allocationCharge bounds allocator rounding on the supported Go builds. Recheck
 // this assumption when qualifying a toolchain. It is not an allocation length.
 func allocationCharge(size Bytes) (Bytes, error) {
-	if size > Bytes(math.MaxInt) || size > math.MaxUint64-7 {
+	if _, err := allocationLength(size); err != nil {
 		return 0, ErrInvalidInput
 	}
-	rounded := (size + 7) &^ 7
+	rounded, err := checkedAdd(size, 7)
+	if err != nil {
+		return 0, err
+	}
+	rounded &^= 7
 	if rounded > math.MaxUint64/2 {
 		return 0, ErrInvalidInput
 	}
@@ -84,30 +88,73 @@ func maximumSubmitCharge(policy DurablePolicy, limits BatchLimits) (Bytes, error
 	if err != nil {
 		return 0, err
 	}
+	record, err := checkedAdd(policy.MaxPayload, 88)
+	if err != nil {
+		return 0, err
+	}
+	countLimit := min(Bytes(limits.SubmitItems), limits.SubmitEncoded/88)
+	crossover := min(countLimit, limits.SubmitEncoded/record)
+	// Within each interval, the charge is affine for each count modulo eight.
+	// Its maximum therefore occurs at one of that residue's two endpoints.
+	second, err := checkedAdd(crossover, 1)
+	if err != nil {
+		return 0, err
+	}
 	maximum := commandBase
-	for count := Bytes(1); count <= Bytes(limits.SubmitItems); count++ {
-		base, err := checkedMultiply(count, 88)
-		if err != nil {
-			return 0, err
+	for _, interval := range [][2]Bytes{{1, crossover}, {second, countLimit}} {
+		first, last := interval[0], interval[1]
+		if first > last {
+			continue
 		}
-		if base > limits.SubmitEncoded {
-			break
+		for residue := range Bytes(8) {
+			offset := (residue + 8 - first%8) % 8
+			if offset > last-first {
+				continue
+			}
+			start, err := checkedAdd(first, offset)
+			if err != nil {
+				return 0, err
+			}
+			end := last - (last-start)%8
+			for _, count := range []Bytes{start, end} {
+				base, err := checkedMultiply(count, 88)
+				if err != nil {
+					return 0, err
+				}
+				payload, err := checkedMultiply(count, policy.MaxPayload)
+				if err != nil {
+					return 0, err
+				}
+				codecs, err := checkedMultiply(count, codec)
+				if err != nil {
+					return 0, err
+				}
+				charge, err := submitCharge(
+					count,
+					min(payload, limits.SubmitEncoded-base),
+					codecs,
+					codec,
+				)
+				if err != nil {
+					return 0, err
+				}
+				maximum = max(maximum, charge)
+			}
 		}
-		payload, err := checkedMultiply(count, policy.MaxPayload)
-		if err != nil {
-			return 0, err
-		}
-		codecs, err := checkedMultiply(count, codec)
-		if err != nil {
-			return 0, err
-		}
-		// Payload and codec maxima compete for encoded space. Overestimating
-		// both ensures every legal command fits an accepted configuration.
-		charge, err := submitCharge(count, min(payload, limits.SubmitEncoded-base), codecs, codec)
-		if err != nil {
-			return 0, err
-		}
-		maximum = max(maximum, charge)
 	}
 	return maximum, nil
+}
+
+func allocationLength(size Bytes) (int, error) {
+	if size > Bytes(math.MaxInt) {
+		return 0, ErrInvalidInput
+	}
+	return int(size), nil
+}
+
+func checkedCountAdd(current, additional, limit Count) (Count, error) {
+	if current > limit || additional > limit-current {
+		return 0, ErrInvalidInput
+	}
+	return current + additional, nil
 }

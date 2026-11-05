@@ -218,9 +218,12 @@ func TestStopAndCancellationBeforeAcquisition(t *testing.T) {
 
 func TestDeliveryScratchAndDescriptors(t *testing.T) {
 	assert.Equal(t, uintptr(120), unsafe.Sizeof(Delivery{}))
-	assert.LessOrEqual(t, sourceBufferCharge(16384), Bytes(16384))
+	source, err := sourceBufferCharge(16384)
+	require.NoError(t, err)
+	assert.LessOrEqual(t, source, Bytes(16384))
 	config := testConfig(t)
-	minimum := deliveryScratchCharge(config.Policy.MaxPayload, config.Policy.MaxCodec)
+	minimum, err := deliveryScratchCharge(config.Policy.MaxPayload, config.Policy.MaxCodec)
+	require.NoError(t, err)
 	assert.Equal(t, Bytes(17664), minimum)
 	config.Runtime.Delivery.ReadScratch = minimum - 1
 	assert.ErrorIs(t, validateConfig(config), ErrInvalidInput)
@@ -229,7 +232,7 @@ func TestDeliveryScratchAndDescriptors(t *testing.T) {
 	queue, _ := openTestQueue(t, config)
 	payload := make([]byte, config.Policy.MaxPayload)
 	codec := string(make([]byte, config.Policy.MaxCodec))
-	_, err := queue.SubmitBatch(t.Context(), []Entry{{Payload: payload, Codec: codec}})
+	_, err = queue.SubmitBatch(t.Context(), []Entry{{Payload: payload, Codec: codec}})
 	require.NoError(t, err)
 	delivery := receiveOne(t, queue)
 	assert.Equal(t, payload, delivery.Payload)

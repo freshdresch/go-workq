@@ -2,6 +2,7 @@ package durable
 
 import (
 	"context"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
@@ -15,13 +16,43 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func connectStore(ctx context.Context, path string, config Config, create bool) (*store, error) {
+	if ctx == nil || path == "" {
+		return nil, ErrInvalidInput
+	}
+	if err := validateConfig(config); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	storage, err := openStoreConnection(ctx, path, create)
+	if err != nil {
+		return nil, err
+	}
+	if err := storage.configure(ctx, path, config, create); err != nil {
+		return nil, errors.Join(err, classifySQLError(storage.close()))
+	}
+	return storage, nil
+}
+
+func (s *store) configure(ctx context.Context, path string, config Config, create bool) error {
+	if err := s.bootstrap(ctx, create); err != nil {
+		return err
+	}
+	if err := s.configureTuning(ctx, config.Runtime.SQLite); err != nil {
+		return err
+	}
+	return s.configurePolicy(ctx, path, config.Policy)
+}
+
 func newTestStore(t *testing.T) (*store, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "queue.sqlite3")
 	storage, err := connectStore(t.Context(), path, testConfig(t), true)
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, storage.close()) })
-	require.NoError(t, storage.createSchema(t.Context()))
+	require.NoError(t, storage.createSchemaForProfile(t.Context(), profileSQLiteWALV1))
 	return storage, path
 }
 
@@ -75,7 +106,7 @@ func TestSchemaUnsignedOrderingAndReopen(t *testing.T) {
 			assert.NoError(t, storage.close())
 		}
 	}()
-	require.NoError(t, storage.createSchema(t.Context()))
+	require.NoError(t, storage.createSchemaForProfile(t.Context(), profileSQLiteWALV1))
 	sequences := []uint64{0, math.MaxInt64, math.MaxInt64 + 1, math.MaxUint64}
 	for _, sequence := range sequences {
 		id := ID{Producer: [16]byte{0xff}, Sequence: sequence}
@@ -219,7 +250,7 @@ func TestSchemaValidationBoundsGoAllocation(t *testing.T) {
 	require.Greater(t, length, 1<<20)
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
-	err = storage.validateSchema(t.Context())
+	err = storage.validateSchemaForProfile(t.Context(), profileSQLiteWALV1)
 	runtime.ReadMemStats(&after)
 	assert.ErrorIs(t, err, ErrUnsupported)
 	allocated := after.TotalAlloc - before.TotalAlloc
@@ -253,14 +284,15 @@ func TestStoreLookupCancellationAndStorageCategories(t *testing.T) {
 func TestIntegrityDiagnosticTransferBound(t *testing.T) {
 	// Keep process allocation sampling isolated from this package's parallel tests.
 	storage, _ := newTestStore(t)
-	require.NoError(t, storage.validateSchema(t.Context()))
+	require.NoError(t, storage.validateSchemaForProfile(t.Context(), profileSQLiteWALV1))
 	name := "extra_" + strings.Repeat("x", 1<<20)
 	_, err := storage.conn.ExecContext(
 		t.Context(),
 		`CREATE TABLE "`+name+`" (x INTEGER CHECK(x>0))`,
 	)
 	require.NoError(t, err)
-	require.ErrorIs(t, storage.validateSchema(t.Context()), ErrUnsupported)
+	err = storage.validateSchemaForProfile(t.Context(), profileSQLiteWALV1)
+	require.ErrorIs(t, err, ErrUnsupported)
 	_, err = storage.conn.ExecContext(t.Context(), "PRAGMA ignore_check_constraints=ON")
 	require.NoError(t, err)
 	_, err = storage.conn.ExecContext(t.Context(), `INSERT INTO "`+name+`" VALUES(-1)`)
@@ -269,7 +301,7 @@ func TestIntegrityDiagnosticTransferBound(t *testing.T) {
 	require.NoError(t, err)
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
-	err = storage.validateSchema(t.Context())
+	err = storage.validateSchemaForProfile(t.Context(), profileSQLiteWALV1)
 	runtime.ReadMemStats(&after)
 	assert.ErrorIs(t, err, ErrStorage)
 	allocated := after.TotalAlloc - before.TotalAlloc
@@ -319,7 +351,7 @@ func TestSetupSQLCancellationCategory(t *testing.T) {
 			case "read-settings":
 				_, err = opened.storage.readSettings(ctx)
 			case "schema":
-				err = opened.storage.validateSchema(ctx)
+				err = opened.storage.validateSchemaForProfile(ctx, profileSQLiteWALV1)
 			case "receipt-producer":
 				_, err = opened.storage.validateLogicalState(ctx, opened.metadata)
 			}

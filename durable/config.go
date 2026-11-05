@@ -2,11 +2,17 @@ package durable
 
 import (
 	"fmt"
+	"math"
 	"time"
+	"unsafe"
 )
 
 const (
 	profileSQLiteWALV1   ProfileID = "sqlite-wal-v1"
+	profileSQLiteWALV2   ProfileID = "sqlite-wal-v2"
+	sqliteMaxLength      Bytes     = 1_000_000_000
+	sqliteMaxPages       Bytes     = 4_294_967_294
+	payloadRowOverhead   Bytes     = 128
 	pageSize             Bytes     = 4096
 	maxPayload           Bytes     = 16 << 10
 	maxCodec             Bytes     = 64
@@ -14,13 +20,14 @@ const (
 	maxCheckpointTrigger Bytes     = 16 << 20
 )
 
-// DefaultRuntime returns the installed profile's defaults for a valid durable policy.
-// PROFILE.md records the tested build and finite resource qualification scope.
+// DefaultRuntime returns valid runtime budgets without allocating policy-sized storage.
+// It preserves default counts and raises byte budgets only as required by record limits.
+// Large records can cross the default WAL refusal threshold after commitment.
 func DefaultRuntime(policy DurablePolicy) (RuntimeConfig, error) {
 	if err := validatePolicy(policy); err != nil {
 		return RuntimeConfig{}, err
 	}
-	return RuntimeConfig{
+	runtime := RuntimeConfig{
 		Ordinary: CommandBudget{Commands: 64, Retained: 8 << 20},
 		Progress: CommandBudget{Commands: 64, Retained: 256 << 10},
 		Batches: BatchLimits{
@@ -39,12 +46,41 @@ func DefaultRuntime(policy DurablePolicy) (RuntimeConfig, error) {
 		SQLite: SQLiteConfig{
 			Cache: 64 << 20, Mmap: 256 << 20, CheckpointTrigger: maxCheckpointTrigger,
 			CheckpointInterval: time.Second, BusyTimeout: 5 * time.Second,
+			WALRefusal: walEnvelopeBytes,
 		},
-	}, nil
+	}
+	runtime.Batches.SubmitEncoded = max(
+		runtime.Batches.SubmitEncoded,
+		88+policy.MaxPayload+policy.MaxCodec,
+	)
+	submit, err := maximumSubmitCharge(policy, runtime.Batches)
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	lookup, err := lookupCharge(Bytes(runtime.Batches.LookupItems))
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	delivery, err := deliveryCharge(policy.MaxPayload, policy.MaxCodec)
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	scratch, err := deliveryScratchCharge(policy.MaxPayload, policy.MaxCodec)
+	if err != nil {
+		return RuntimeConfig{}, err
+	}
+	runtime.Ordinary.Retained = max(runtime.Ordinary.Retained, submit, lookup)
+	runtime.Group.Encoded = max(runtime.Group.Encoded, runtime.Batches.SubmitEncoded)
+	runtime.Delivery.Retained = max(runtime.Delivery.Retained, delivery)
+	runtime.Delivery.ReadScratch = max(runtime.Delivery.ReadScratch, scratch)
+	if err := validateConfig(Config{Policy: policy, Runtime: runtime}); err != nil {
+		return RuntimeConfig{}, err
+	}
+	return runtime, nil
 }
 
 func validateProfile(profile ProfileID) error {
-	if profile != profileSQLiteWALV1 {
+	if profile != profileSQLiteWALV1 && profile != profileSQLiteWALV2 {
 		return fmt.Errorf("profile %q: %w", profile, ErrUnsupported)
 	}
 	return nil
@@ -53,6 +89,9 @@ func validateProfile(profile ProfileID) error {
 func validatePolicy(policy DurablePolicy) error {
 	if err := validateProfile(policy.Profile); err != nil {
 		return err
+	}
+	if policy.Profile == profileSQLiteWALV2 {
+		return validatePolicyV2(policy)
 	}
 	valid := policy.MaxPayload > 0 && policy.MaxPayload <= maxPayload &&
 		policy.MaxCodec <= maxCodec &&
@@ -68,6 +107,36 @@ func validatePolicy(policy DurablePolicy) error {
 	return nil
 }
 
+func validatePolicyV2(policy DurablePolicy) error {
+	valid := policy.MaxPayload > 0 && policy.MaxPendingItems > 0 &&
+		policy.MaxPendingPayload >= policy.MaxPayload &&
+		policy.MaxReceipts >= policy.MaxPendingItems && policy.MaxProducers > 0 &&
+		policy.DatabaseLimit > 0 && policy.DatabaseLimit%pageSize == 0 &&
+		policy.DatabaseLimit/pageSize <= sqliteMaxPages
+	if !valid {
+		return fmt.Errorf("durable limits: %w", ErrInvalidInput)
+	}
+	row, err := payloadRowLimit(policy)
+	if err != nil {
+		return err
+	}
+	if row > sqliteMaxLength {
+		return fmt.Errorf("SQLite record length: %w", ErrInvalidInput)
+	}
+	_, err = allocationCharge(row)
+	return err
+}
+
+func payloadRowLimit(policy DurablePolicy) (Bytes, error) {
+	record, err := checkedAdd(policy.MaxPayload, policy.MaxCodec)
+	if err != nil {
+		return 0, err
+	}
+	// The four-column WITHOUT ROWID record needs at most 41 structural bytes.
+	// Keep conservative room for SQLite's serial types and integer encodings.
+	return checkedAdd(record, payloadRowOverhead)
+}
+
 func validateConfig(config Config) error {
 	if err := validatePolicy(config.Policy); err != nil {
 		return err
@@ -76,31 +145,35 @@ func validateConfig(config Config) error {
 		return fmt.Errorf("durability %d: %w", config.Durability, ErrInvalidInput)
 	}
 	runtime := config.Runtime
-	counts := []struct{ value, ceiling Count }{
-		{runtime.Ordinary.Commands, 64}, {runtime.Progress.Commands, 64},
-		{runtime.Batches.SubmitItems, 256}, {runtime.Batches.AckItems, 256},
-		{runtime.Batches.LookupItems, 256}, {runtime.Group.Commands, 64},
-		{runtime.Group.Operations, 256}, {runtime.Delivery.Items, 256},
-		{runtime.Delivery.ReceiveItems, 256}, {runtime.Delivery.ScanRows, 256},
-		{runtime.Maintenance.CleanupRows, 256}, {runtime.Maintenance.MaxCommandTurns, 8},
+	counts := []Count{
+		runtime.Ordinary.Commands, runtime.Progress.Commands,
+		runtime.Batches.SubmitItems, runtime.Batches.AckItems, runtime.Batches.LookupItems,
+		runtime.Group.Commands, runtime.Group.Operations, runtime.Delivery.Items,
+		runtime.Delivery.ReceiveItems, runtime.Delivery.ScanRows,
+		runtime.Maintenance.CleanupRows, runtime.Maintenance.MaxCommandTurns,
 	}
-	for _, limit := range counts {
-		if limit.value == 0 || limit.value > limit.ceiling {
+	for _, count := range counts {
+		if count == 0 {
 			return fmt.Errorf("runtime count: %w", ErrInvalidInput)
 		}
+		if _, err := allocationLength(Bytes(count)); err != nil {
+			return err
+		}
 	}
-	byteLimits := []struct{ value, ceiling Bytes }{
-		{runtime.Ordinary.Retained, 8 << 20}, {runtime.Progress.Retained, 256 << 10},
-		{runtime.Batches.SubmitEncoded, 2 << 20}, {runtime.Group.Encoded, 2 << 20},
-		{runtime.Delivery.Retained, 4 << 20}, {runtime.Delivery.ReadScratch, 32 << 10},
-		{runtime.Maintenance.CleanupEncoded, 64 << 10},
+	byteLimits := []Bytes{
+		runtime.Ordinary.Retained, runtime.Progress.Retained, runtime.Batches.SubmitEncoded,
+		runtime.Group.Encoded, runtime.Delivery.Retained, runtime.Delivery.ReadScratch,
+		runtime.Maintenance.CleanupEncoded,
 	}
 	for _, limit := range byteLimits {
-		if limit.value == 0 || limit.value > limit.ceiling {
+		if limit == 0 {
 			return fmt.Errorf("runtime bytes: %w", ErrInvalidInput)
 		}
 	}
-	// Ceilings above make all subsequent sums, products, and signed conversions safe.
+	if _, err := runtimeWorkingCharge(runtime); err != nil {
+		return err
+	}
+	// Both formats bound record bytes below 1e9 and batch counts to uint32.
 	record := config.Policy.MaxPayload + config.Policy.MaxCodec
 	maximumSubmit := min(
 		runtime.Batches.SubmitEncoded,
@@ -114,18 +187,17 @@ func validateConfig(config Config) error {
 	if err != nil {
 		return err
 	}
-	payloadCharge, err := allocationCharge(config.Policy.MaxPayload)
+	deliveryRetained, err := deliveryCharge(config.Policy.MaxPayload, config.Policy.MaxCodec)
 	if err != nil {
 		return err
 	}
-	codecCharge, err := allocationCharge(config.Policy.MaxCodec)
+	deliveryScratch, err := deliveryScratchCharge(config.Policy.MaxPayload, config.Policy.MaxCodec)
 	if err != nil {
 		return err
 	}
 	valid := runtime.Batches.SubmitEncoded >= 88+record &&
-		runtime.Delivery.Retained >= payloadCharge+codecCharge+256 &&
-		runtime.Delivery.ReadScratch >= deliveryScratchCharge(
-			config.Policy.MaxPayload, config.Policy.MaxCodec) &&
+		runtime.Delivery.Retained >= deliveryRetained &&
+		runtime.Delivery.ReadScratch >= deliveryScratch &&
 		runtime.Ordinary.Retained >= submitRetained &&
 		runtime.Ordinary.Retained >= lookupRetained &&
 		runtime.Progress.Retained >= 256+128*Bytes(runtime.Batches.AckItems) &&
@@ -140,14 +212,93 @@ func validateConfig(config Config) error {
 		return fmt.Errorf("runtime budget relation: %w", ErrInvalidInput)
 	}
 	sqlite := runtime.SQLite
-	validSQLite := sqlite.Cache >= 8<<20 && sqlite.Cache <= 64<<20 &&
-		sqlite.Mmap <= 256<<20 && sqlite.CheckpointTrigger >= 4<<20 &&
-		sqlite.CheckpointTrigger <= maxCheckpointTrigger && sqlite.CheckpointInterval > 0 &&
-		sqlite.CheckpointInterval <= time.Second && sqlite.BusyTimeout >= 0 &&
-		sqlite.BusyTimeout <= 5*time.Second &&
-		runtime.Group.MaxDelay >= 0 && runtime.Group.MaxDelay <= 10*time.Millisecond
+	validSQLite := sqlite.Cache/1024 > 0 && sqlite.Cache/1024 <= math.MaxInt32 &&
+		sqlite.Mmap <= math.MaxInt64 && sqlite.CheckpointTrigger > 0 &&
+		sqlite.CheckpointTrigger < sqlite.WALRefusal && sqlite.WALRefusal <= math.MaxInt64 &&
+		sqlite.CheckpointInterval > 0 && sqlite.BusyTimeout >= 0 &&
+		sqlite.BusyTimeout/time.Millisecond <= math.MaxInt32 && runtime.Group.MaxDelay >= 0
 	if !validSQLite {
 		return fmt.Errorf("SQLite tuning: %w", ErrInvalidInput)
 	}
 	return nil
+}
+
+// normalizeConfig resolves the one compatibility default before storing runtime settings.
+func normalizeConfig(config Config) Config {
+	if config.Runtime.SQLite.WALRefusal == 0 {
+		config.Runtime.SQLite.WALRefusal = walEnvelopeBytes
+	}
+	return config
+}
+
+func deliveryRingCapacity(items Count) (int, error) {
+	// The frontier ring accepts powers of two through 2^30.
+	if items == 0 || items > 1<<30 {
+		return 0, ErrInvalidInput
+	}
+	capacity := Bytes(1)
+	for capacity < Bytes(items) {
+		capacity *= 2
+	}
+	return allocationLength(capacity)
+}
+
+// runtimeWorkingCharge covers configuration-sized arrays, including the rounded ring.
+// Caller-owned results, diagnostics, and SQLite native memory remain separate.
+func runtimeWorkingCharge(runtime RuntimeConfig) (Bytes, error) {
+	capacity, err := deliveryRingCapacity(runtime.Delivery.Items)
+	if err != nil {
+		return 0, err
+	}
+	arrays := []struct{ count, size Bytes }{
+		{Bytes(runtime.Ordinary.Commands), Bytes(unsafe.Sizeof(command{}))},
+		{Bytes(runtime.Progress.Commands), Bytes(unsafe.Sizeof(command{}))},
+		{Bytes(runtime.Delivery.Items), Bytes(unsafe.Sizeof(claim{}))},
+		{Bytes(capacity), Bytes(unsafe.Sizeof(int(0)))},
+		{Bytes(capacity), 8}, {Bytes(capacity), 8},
+		{Bytes(runtime.Group.Commands), Bytes(unsafe.Sizeof(groupedCommand{}))},
+	}
+	var working Bytes
+	for _, array := range arrays {
+		size, err := checkedMultiply(array.count, array.size)
+		if err != nil {
+			return 0, err
+		}
+		charge, err := allocationCharge(size)
+		if err != nil {
+			return 0, err
+		}
+		working, err = checkedAdd(working, charge)
+		if err != nil {
+			return 0, err
+		}
+	}
+	// Check public-batch arrays even where their reservation has a separate formula.
+	batches := []struct{ count, size Bytes }{
+		{Bytes(runtime.Batches.SubmitItems), Bytes(unsafe.Sizeof(Entry{}))},
+		{Bytes(runtime.Batches.SubmitItems), 1},
+		{Bytes(runtime.Batches.SubmitItems), 16},
+		{Bytes(runtime.Batches.AckItems), Bytes(unsafe.Sizeof(Token{}))},
+		{Bytes(runtime.Batches.LookupItems), Bytes(unsafe.Sizeof(ID{}))},
+		{Bytes(runtime.Batches.LookupItems), Bytes(unsafe.Sizeof(Status{}))},
+		{Bytes(runtime.Delivery.ReceiveItems), Bytes(unsafe.Sizeof(Delivery{}))},
+	}
+	for _, array := range batches {
+		size, err := checkedMultiply(array.count, array.size)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := allocationCharge(size); err != nil {
+			return 0, err
+		}
+	}
+	total := working
+	for _, budget := range []Bytes{runtime.Ordinary.Retained, runtime.Progress.Retained,
+		runtime.Delivery.Retained, runtime.Delivery.ReadScratch} {
+		total, err = checkedAdd(total, budget)
+		if err != nil {
+			return 0, err
+		}
+	}
+	return working, nil
 }

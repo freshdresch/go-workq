@@ -75,14 +75,16 @@ func run(
 
 func exampleConfig() (durable.Config, error) {
 	policy := durable.DurablePolicy{
-		Profile: "sqlite-wal-v1", MaxPayload: 16 << 10, MaxCodec: 64,
-		MaxPendingItems: 4096, MaxPendingPayload: 16 << 20,
-		MaxReceipts: 16384, MaxProducers: 256, DatabaseLimit: 1 << 30,
+		Profile: "sqlite-wal-v2", MaxPayload: 64 << 10, MaxCodec: 256,
+		MaxPendingItems: 10000, MaxPendingPayload: 64 << 20,
+		MaxReceipts: 20000, MaxProducers: 512, DatabaseLimit: 2 << 30,
 	}
 	runtime, err := durable.DefaultRuntime(policy)
 	if err != nil {
 		return durable.Config{}, err
 	}
+	// This is an observed refusal threshold, not reserved disk or a hard WAL cap.
+	runtime.SQLite.WALRefusal = 64 << 20
 	return durable.Config{Policy: policy, Durability: durable.Synchronized, Runtime: runtime}, nil
 }
 

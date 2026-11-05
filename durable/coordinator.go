@@ -124,7 +124,9 @@ func (q *Queue) coordinate() {
 					}
 					q.finishLocked(command.pool, command.slot, command.result, nil, command.err)
 				}
-				commandTurns = min(commandTurns+1, q.config.Runtime.Maintenance.MaxCommandTurns)
+				if commandTurns < q.config.Runtime.Maintenance.MaxCommandTurns {
+					commandTurns++
+				}
 				continue
 			}
 		}
@@ -156,7 +158,9 @@ func (q *Queue) coordinate() {
 			q.scanWrapped = false
 		}
 		q.finishLocked(pool, slot, result, statuses, err)
-		commandTurns = min(commandTurns+1, q.config.Runtime.Maintenance.MaxCommandTurns)
+		if commandTurns < q.config.Runtime.Maintenance.MaxCommandTurns {
+			commandTurns++
+		}
 	}
 	q.closeDeliveryLocked()
 	for index := range q.claims {

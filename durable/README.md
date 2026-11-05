@@ -8,9 +8,10 @@ in an application transaction.
 For cooperating destinations, see [applying external effects](external-effects.md). The guide
 connects atomic receipts, durable HTTP idempotency, source outboxes, and recovery to runnable examples.
 
-The implementation uses the `sqlite-wal-v1` profile with a 64 MiB operational WAL envelope.
-Finite software qualification, production comparison, and final independent library review
-completed on November 3, 2026, for the tested Linux amd64 build on WSL2 local ext4.
+The implementation recognizes `sqlite-wal-v1` and `sqlite-wal-v2` storage formats.
+The historical v1 configuration used a 64 MiB WAL refusal threshold. Its finite software
+qualification, production comparison, and independent library review completed on November 3,
+2026, for the tested Linux amd64 build on WSL2 local ext4.
 The [profile manifest](PROFILE.md) records the qualification scope and initial deployment provision.
 The [benchmark report](../benchmark/workq/durable.md) records resource and performance
 measurements.
@@ -30,7 +31,8 @@ go run ./examples/durable -directory /path/on/ext4/demo-queue
 bazelisk run //examples/durable -- -directory /path/on/ext4/demo-queue
 ```
 
-The [runnable example](../examples/durable/main.go) submits three fixed source records, prints them,
+The [runnable example](../examples/durable/main.go) selects v2 explicitly and submits three fixed
+source records, prints them,
 and acknowledges successful writes. Repeating it uses identical IDs and bytes, so acknowledged
 records do not print again. A crash between printing and Ack can repeat output. Printing is a
 demonstration effect, not a durable destination receipt.
@@ -54,9 +56,18 @@ queue, err := durable.Open(ctx, directory, durable.Config{
 })
 ```
 
+This conservative v1 example preserves the historical logical ceilings. For expanded limits,
+select `Profile: "sqlite-wal-v2"` explicitly. The format defines storage compatibility,
+`DurablePolicy` defines persistent capacities, and `RuntimeConfig` defines per-open resources.
+Qualification describes measured workloads and does not set configuration ceilings.
+`DefaultRuntime` keeps default counts and raises only byte budgets needed for larger records.
+It is a sizing helper, not a deployment qualification.
+
 These numbers are logical ceilings. The [profile manifest](PROFILE.md) gives separate initial
 process-memory and disk provision recommendations. Zero `Config` is invalid.
-Runtime zero fields do not request defaults. Runtime tuning may change on reopen
+Runtime zero fields do not request defaults, except `SQLite.WALRefusal`: zero selects 64 MiB.
+`DefaultRuntime` returns that value explicitly. Set `runtime.SQLite.WALRefusal` to choose another
+positive threshold greater than `CheckpointTrigger`. Runtime tuning may change on reopen
 within supported relations. Persisted logical policy and durability must match exactly.
 
 `Synchronized` is the zero/default durability and uses FULL. Applied mutations survive application
@@ -66,12 +77,12 @@ loss. There is no bounded loss window. NORMAL retains atomic batches and applica
 recovery. Initialization and token epochs use FULL in both modes.
 
 The main database cap excludes WAL and filesystem overhead. The checkpoint trigger permits one
-group's overshoot and is not a hard WAL cap. An observed WAL length above 64 MiB irreversibly
-stops new delivery and unstarted mutations for the session. A crossing commit remains Applied,
-and healthy Lookup and Release remain available. SQLite cache and mmap settings are not total-memory
-limits. Caller inputs, worker allocations, retained delivery bytes, native SQLite allocations,
-and runtime overhead require separate provision. There is no perpetual Ack reserve or hard RSS
-promise.
+group's overshoot and is not a hard WAL cap. An observed WAL length above the effective
+`WALRefusal` irreversibly stops new delivery and unstarted mutations for the session. A crossing
+commit remains Applied, and healthy Lookup and Release remain available. SQLite cache and mmap
+settings are not total-memory limits. Caller inputs, worker allocations, retained delivery
+bytes, native SQLite allocations, and runtime overhead require separate provision. There is no
+perpetual Ack reserve or hard RSS promise.
 
 Concurrent callers need an application limit. Waiting calls can retain old queue-created change
 notification channels, plus caller stacks, contexts, and runtime wait state. The queue roots one
@@ -94,12 +105,12 @@ graph. Fault and Abort reporting can therefore exceed the working-storage allowa
 need process headroom for that cost. Snapshot copies at most 256 detail bytes, but preparing that
 copy can allocate more. This preserves full returned causes and errors.Is/errors.As behavior.
 
-Open, Inspect, Maintain, and ChangeDurability limit directory input, absolute form, and resolved
-form to 4095 bytes each. Longer paths return ErrInvalidInput. Relative and symlink aliases remain
-supported. Filesystem normalization and resolution need separate startup/backend memory provision,
-including temporary allocations made by queue-invoked library calls. This phase precedes logical
-validation and active pools. Symlink traversal scratch can exceed the input limit. Retained
-canonical paths and DSNs remain charged to fixed storage.
+Open, Inspect, Maintain, Resize, and ChangeDurability limit directory input, absolute form, and
+resolved form to 4095 bytes each. Longer paths return ErrInvalidInput. Relative and symlink
+aliases remain supported. Filesystem normalization and resolution need separate startup/backend
+memory provision, including temporary allocations made by queue-invoked library calls. This
+phase precedes logical validation and active pools. Symlink traversal scratch can exceed the
+input limit. Retained canonical paths and DSNs remain charged to fixed storage.
 
 ## Submit and reconcile
 
@@ -182,6 +193,30 @@ Unavailable values are not measured zeros.
 expected policy, then commits the change with FULL. Inspect resolves Unknown. Opening with a
 different policy never changes it. Upgrading protects surviving state, not NORMAL operations
 already lost. Downgrading affects future ordinary writes.
+
+`Resize(ctx, directory, request)` changes the complete durable policy offline. Obtain the UUID
+and Expected policy from `Inspect`, copy Expected to Next, then edit the requested limits.
+Set `Next.Profile = "sqlite-wal-v2"` to migrate v1 explicitly. `Open` never migrates or resizes.
+Resize supports v1 to v1, v1 to v2, and v2 to v2. It does not support downgrade to v1.
+Stop and join workers before closing the queue and performing offline operations.
+
+Resize always uses FULL and preserves store identity, records, floors, order, and epoch.
+A shrink must fit pending work, all retained receipts, and lifetime producers. If any acknowledged
+receipt remains, decreasing MaxPayload or MaxCodec returns ErrCapacity because its original
+lengths are no longer available. Coordinate retirement and wait for cleanup before retrying.
+A lower main cap must fit both recovered page count and physical file length. Free pages still
+occupy the file. Run bounded `Maintain` calls separately if physical reclamation is needed.
+Migration temporarily keeps both payload tables and can need substantial main-file and WAL space.
+Live-session WALRefusal does not cap offline migration. A larger migration cap followed by
+Maintain and a separate shrink can provide headroom. Logical capacity never proves physical fit.
+
+After an Unknown Resize, keep the store quiescent and call Inspect. Check the same UUID and the
+complete policy. Expected means the change did not survive. Next establishes the desired state
+after Inspect's synchronization barrier. An error or other state requires diagnosis. Never infer
+success from an error or automatically perform an inverse resize. Retrying the identical request
+is safe: an already stored Next returns Applied after validation, synchronization, and closure.
+This establishes desired state, not invocation history. The runnable `ExampleResize` demonstrates
+this reconciliation and a subsequent Open with DefaultRuntime for the new policy.
 
 Preserve `queue.sqlite3`, its surviving WAL, and the permanent LOCK. Never delete WAL or unlink
 LOCK as recovery. Do not copy only the main database while live. Maintain needs writable access

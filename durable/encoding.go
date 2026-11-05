@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"hash"
 	"math"
 )
 
@@ -88,18 +89,28 @@ func decodeToken(encoded []byte) (Token, error) {
 }
 
 func entryDigest(codec string, payload []byte) [32]byte {
-	digest := sha256.New()
+	digest := newEntryDigest(uint64(len(codec)))
 	// hash.Hash writes always consume their input without returning an error.
-	_, _ = digest.Write([]byte(digestDomain))
-	codecLength := encodeUint64(uint64(len(codec)))
-	_, _ = digest.Write(codecLength[:])
 	_, _ = digest.Write([]byte(codec))
-	payloadLength := encodeUint64(uint64(len(payload)))
-	_, _ = digest.Write(payloadLength[:])
+	writeDigestLength(digest, uint64(len(payload)))
 	_, _ = digest.Write(payload)
 	var result [32]byte
 	copy(result[:], digest.Sum(nil))
 	return result
+}
+
+func newEntryDigest(codecLength uint64) hash.Hash {
+	digest := sha256.New()
+	// hash.Hash writes always consume their input without returning an error.
+	_, _ = digest.Write([]byte(digestDomain))
+	writeDigestLength(digest, codecLength)
+	return digest
+}
+
+func writeDigestLength(digest hash.Hash, length uint64) {
+	encoded := encodeUint64(length)
+	// hash.Hash writes always consume their input without returning an error.
+	_, _ = digest.Write(encoded[:])
 }
 
 func encodePolicy(policy DurablePolicy) [56]byte {
@@ -141,4 +152,15 @@ func decodePolicy(profile ProfileID, encoded []byte) (DurablePolicy, error) {
 		return DurablePolicy{}, fmt.Errorf("stored policy: %w: %v", ErrStorage, err)
 	}
 	return policy, nil
+}
+
+func schemaVersionForProfile(profile ProfileID) (uint64, error) {
+	switch profile {
+	case profileSQLiteWALV1:
+		return schemaVersion, nil
+	case profileSQLiteWALV2:
+		return 2, nil
+	default:
+		return 0, ErrUnsupported
+	}
 }

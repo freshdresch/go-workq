@@ -12,13 +12,14 @@ import (
 // Directory input, absolute form, and resolved form must each fit 4095 bytes.
 // Longer paths return [ErrInvalidInput]. See the package path-resolution memory boundary.
 func Open(ctx context.Context, directory string, config Config) (*Queue, error) {
+	config = normalizeConfig(config)
 	opened, err := startStore(ctx, directory, config)
 	if err != nil {
 		return nil, err
 	}
-	capacity := 1
-	for capacity < int(config.Runtime.Delivery.Items) {
-		capacity *= 2
+	capacity, err := deliveryRingCapacity(config.Runtime.Delivery.Items)
+	if err != nil {
+		return nil, errors.Join(err, opened.close())
 	}
 	deliveryQueue, err := workq.New[int](capacity)
 	if err != nil {
@@ -42,6 +43,7 @@ func Open(ctx context.Context, directory string, config Config) (*Queue, error) 
 	queue.snapshot.Validation = opened.validation
 	queue.snapshot.Disk.Cache = config.Runtime.SQLite.Cache / 1024 * 1024
 	queue.snapshot.Disk.Mmap = config.Runtime.SQLite.Mmap
+	queue.snapshot.Disk.WALRefusal = config.Runtime.SQLite.WALRefusal
 	go queue.coordinate()
 	return queue, nil
 }

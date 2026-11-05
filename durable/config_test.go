@@ -64,7 +64,7 @@ func TestConfigRelationsBeforeOpening(t *testing.T) {
 		{"trigger", func(cfg *Config) { cfg.Runtime.SQLite.CheckpointTrigger = 0 }},
 		{"interval", func(cfg *Config) { cfg.Runtime.SQLite.CheckpointInterval = 0 }},
 		{"busy timeout", func(cfg *Config) { cfg.Runtime.SQLite.BusyTimeout = -1 }},
-		{"group delay", func(cfg *Config) { cfg.Runtime.Group.MaxDelay = 11 * time.Millisecond }},
+		{"group delay", func(cfg *Config) { cfg.Runtime.Group.MaxDelay = -time.Millisecond }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

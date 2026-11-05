@@ -66,7 +66,13 @@ func (q *Queue) applyRetirement(
 			return metadata, nil
 		}
 	}
-	if unknown && metadata.counts.Producers == metadata.policy.MaxProducers {
+	if unknown && metadata.counts.Producers >= metadata.policy.MaxProducers {
+		return storeMetadata{}, ErrCapacity
+	}
+	if has == 0 && metadata.counts.RetiredProducers >= metadata.policy.MaxProducers {
+		return storeMetadata{}, ErrCapacity
+	}
+	if cleanup == 0 && metadata.counts.CleanupMarkers >= metadata.policy.MaxProducers {
 		return storeMetadata{}, ErrCapacity
 	}
 	lower := encodeID(ID{Producer: retirement.Producer})

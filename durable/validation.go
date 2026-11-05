@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
 	"strings"
 )
 
@@ -19,26 +20,16 @@ type storeMetadata struct {
 	counts     StoreCounts
 }
 
-func (s *store) validate(ctx context.Context) (storeMetadata, uint64, error) {
-	if err := ctx.Err(); err != nil {
-		return storeMetadata{}, 0, err
-	}
-	if err := s.validateSchema(ctx); err != nil {
-		return storeMetadata{}, 0, err
-	}
-	metadata, err := s.readMetadata(ctx)
-	if err != nil {
-		return storeMetadata{}, 0, err
-	}
-	records, err := s.validateLogicalState(ctx, metadata)
-	if err != nil {
-		return storeMetadata{}, 0, err
-	}
-	return metadata, records, nil
+func (s *store) validateLogicalState(ctx context.Context, metadata storeMetadata) (uint64, error) {
+	return s.validateLogicalStateObserved(ctx, metadata, nil)
 }
 
-func (s *store) validateLogicalState(ctx context.Context, metadata storeMetadata) (uint64, error) {
-	counts, records, err := s.validateRecords(ctx, metadata)
+func (s *store) validateLogicalStateObserved(
+	ctx context.Context,
+	metadata storeMetadata,
+	observer validationObserver,
+) (uint64, error) {
+	counts, records, err := s.validateRecordsObserved(ctx, metadata, observer)
 	if err != nil {
 		return 0, err
 	}
@@ -50,7 +41,11 @@ func (s *store) validateLogicalState(ctx context.Context, metadata storeMetadata
 
 func corrupt(reason string) error { return fmt.Errorf("%s: %w", reason, ErrStorage) }
 
-func (s *store) validateSchema(ctx context.Context) (err error) {
+func (s *store) validateSchemaForProfile(ctx context.Context, profile ProfileID) (err error) {
+	ddl, err := schemaForProfile(profile)
+	if err != nil {
+		return err
+	}
 	rows, err := s.conn.QueryContext(
 		ctx,
 		"SELECT integrity_check='ok' FROM pragma_integrity_check LIMIT 1",
@@ -79,14 +74,14 @@ func (s *store) validateSchema(ctx context.Context) (err error) {
 	if err := rows.Close(); err != nil {
 		return err
 	}
-	expected := strings.Split(strings.TrimSuffix(strings.TrimSpace(schemaDDL), ";"), ";")
+	expected := strings.Split(strings.TrimSuffix(strings.TrimSpace(ddl), ";"), ";")
 	for i := range expected {
 		expected[i] = strings.Join(strings.Fields(expected[i]), " ")
 	}
 	// Bound Go transfers before Scan. SQLite's native schema loading is separate.
 	rows, err = s.conn.QueryContext(ctx, `SELECT
  CASE WHEN length(CAST(sql AS BLOB))<=? THEN sql ELSE NULL END
- FROM sqlite_schema WHERE sql IS NOT NULL LIMIT ?`, len(schemaDDL), len(expected)+1)
+ FROM sqlite_schema WHERE sql IS NOT NULL LIMIT ?`, len(ddl), len(expected)+1)
 	if err != nil {
 		return err
 	}
@@ -122,9 +117,43 @@ func (s *store) validateSchema(ctx context.Context) (err error) {
 	return nil
 }
 
+// Validate the common table before querying metadata, including interrupted creations.
+// This bounds schema transfers without confusing an absent format with an I/O failure.
+func (s *store) validateMetadataSchema(ctx context.Context) error {
+	var isTable bool
+	var statement sql.NullString
+	err := s.conn.QueryRowContext(
+		ctx,
+		`SELECT type='table',
+ CASE WHEN length(CAST(sql AS BLOB))<=? THEN sql ELSE NULL END
+ FROM sqlite_schema WHERE name='meta' LIMIT 1`,
+		len(metadataDDL),
+	).Scan(&isTable, &statement)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrUnsupported
+	}
+	if err != nil {
+		return classifySQLError(err)
+	}
+	if !isTable || !statement.Valid {
+		return ErrUnsupported
+	}
+	expected := strings.TrimSuffix(strings.TrimSpace(metadataDDL), ";")
+	if strings.Join(strings.Fields(statement.String), " ") !=
+		strings.Join(strings.Fields(expected), " ") {
+		return ErrUnsupported
+	}
+	return nil
+}
+
 func (s *store) readMetadata(ctx context.Context) (_ storeMetadata, err error) {
-	rows, err := s.conn.QueryContext(ctx, `SELECT key, typeof(value), length(value),
- CASE WHEN length(value)<=56 THEN value ELSE NULL END FROM meta ORDER BY key`)
+	if err := s.validateMetadataSchema(ctx); err != nil {
+		return storeMetadata{}, err
+	}
+	rows, err := s.conn.QueryContext(ctx, `SELECT CASE WHEN typeof(key)='integer' THEN key ELSE 0 END,
+ typeof(value), length(value),
+ CASE WHEN typeof(value)='blob' AND length(value)<=56 THEN value ELSE NULL END
+ FROM meta ORDER BY key LIMIT 16`)
 	if err != nil {
 		return storeMetadata{}, err
 	}
@@ -164,7 +193,15 @@ func (s *store) readMetadata(ctx context.Context) (_ storeMetadata, err error) {
 	if count != len(values) {
 		return storeMetadata{}, corrupt("missing metadata")
 	}
-	for _, key := range []int{metaSchema, metaProfileVersion, metaAccountingVersion} {
+	profile := ProfileID(values[metaProfile-1])
+	version, err := schemaVersionForProfile(profile)
+	if err != nil {
+		return storeMetadata{}, err
+	}
+	if binary.BigEndian.Uint64(values[metaSchema-1]) != version {
+		return storeMetadata{}, ErrUnsupported
+	}
+	for _, key := range []int{metaProfileVersion, metaAccountingVersion} {
 		if binary.BigEndian.Uint64(values[key-1]) != 1 {
 			return storeMetadata{}, ErrUnsupported
 		}
@@ -197,20 +234,20 @@ func (s *store) readMetadata(ctx context.Context) (_ storeMetadata, err error) {
 	return metadata, nil
 }
 
-func checkValidationContext(ctx context.Context, records uint64) error {
-	if records%256 == 0 {
-		return ctx.Err()
-	}
-	return nil
-}
-
 func (s *store) validateRecords(
 	ctx context.Context,
 	metadata storeMetadata,
+) (StoreCounts, uint64, error) {
+	return s.validateRecordsObserved(ctx, metadata, nil)
+}
+
+func (s *store) validateRecordsObserved(
+	ctx context.Context,
+	metadata storeMetadata,
+	observer validationObserver,
 ) (_ StoreCounts, records uint64, err error) {
 	var counts StoreCounts
-	rows, err := s.conn.QueryContext(ctx, `SELECT producer, has_retirement, retired_through,
- cleanup_needed FROM producers ORDER BY producer`)
+	rows, err := s.conn.QueryContext(ctx, validationProducersQuery)
 	if err != nil {
 		return counts, records, err
 	}
@@ -230,14 +267,14 @@ func (s *store) validateRecords(
 				return counts, records, corrupt("unretired producer")
 			}
 		}
-		counts.Producers++
+		counts.Producers, err = validationCount(counts.Producers, 1, metadata.policy.MaxProducers)
+		if err != nil {
+			return counts, records, err
+		}
 		counts.RetiredProducers += Count(retired)
 		counts.CleanupMarkers += Count(cleanup)
-		if counts.Producers > metadata.policy.MaxProducers {
-			return counts, records, corrupt("producer limit")
-		}
 		records++
-		if err := checkValidationContext(ctx, records); err != nil {
+		if err := ctx.Err(); err != nil {
 			return counts, records, err
 		}
 	}
@@ -247,8 +284,7 @@ func (s *store) validateRecords(
 	if err := rows.Close(); err != nil {
 		return counts, records, err
 	}
-	rows, err = s.conn.QueryContext(ctx, `SELECT id, digest, state, accept_order, ack_token
- FROM receipts ORDER BY id`)
+	rows, err = s.conn.QueryContext(ctx, validationReceiptsQuery)
 	if err != nil {
 		return counts, records, err
 	}
@@ -268,13 +304,23 @@ func (s *store) validateRecords(
 		}
 		var retired, cleanup int
 		var floor []byte
-		err := s.conn.QueryRowContext(ctx, `SELECT has_retirement, retired_through, cleanup_needed
- FROM producers WHERE producer=?`, key[:16]).Scan(&retired, &floor, &cleanup)
+		err := s.conn.QueryRowContext(
+			ctx,
+			`SELECT CASE WHEN typeof(has_retirement)='integer' THEN has_retirement ELSE -1 END,
+ CASE WHEN typeof(retired_through)='blob' AND length(retired_through)=8
+ THEN retired_through END,
+ CASE WHEN typeof(cleanup_needed)='integer' THEN cleanup_needed ELSE -1 END
+ FROM producers WHERE producer=?`,
+			key[:16],
+		).Scan(&retired, &floor, &cleanup)
 		if errors.Is(err, sql.ErrNoRows) {
 			return counts, records, errors.Join(corrupt("receipt producer"), err)
 		}
 		if err != nil {
 			return counts, records, classifySQLError(err)
+		}
+		if len(floor) != 8 {
+			return counts, records, corrupt("producer floor")
 		}
 		if retired == 1 && bytes.Compare(key[16:], floor) <= 0 {
 			if state == 0 || cleanup == 0 {
@@ -295,25 +341,43 @@ func (s *store) validateRecords(
 			if len(token) != 0 {
 				return counts, records, corrupt("pending token")
 			}
-			length, err := s.validatePayload(ctx, key, digest, metadata.policy)
+			recordObserver := validationRecordObserver{
+				observer:         observer,
+				scanDestinations: cap(key) + cap(digest) + cap(order) + cap(token) + cap(floor),
+			}
+			length, err := s.validatePayloadObserved(
+				ctx,
+				key,
+				digest,
+				metadata.policy,
+				recordObserver,
+			)
 			if err != nil {
 				return counts, records, err
 			}
 			records++
-			if err := checkValidationContext(ctx, records); err != nil {
+			if err := ctx.Err(); err != nil {
 				return counts, records, err
 			}
-			counts.PendingItems++
+			counts.PendingItems, err = validationCount(
+				counts.PendingItems,
+				1,
+				metadata.policy.MaxPendingItems,
+			)
+			if err != nil {
+				return counts, records, err
+			}
+			if Bytes(length) > metadata.policy.MaxPendingPayload-counts.PendingPayload {
+				return counts, records, corrupt("pending payload limit")
+			}
 			counts.PendingPayload += Bytes(length)
 		}
-		counts.Receipts++
-		if counts.Receipts > metadata.policy.MaxReceipts ||
-			counts.PendingItems > metadata.policy.MaxPendingItems ||
-			counts.PendingPayload > metadata.policy.MaxPendingPayload {
-			return counts, records, corrupt("record limits")
+		counts.Receipts, err = validationCount(counts.Receipts, 1, metadata.policy.MaxReceipts)
+		if err != nil {
+			return counts, records, err
 		}
 		records++
-		if err := checkValidationContext(ctx, records); err != nil {
+		if err := ctx.Err(); err != nil {
 			return counts, records, err
 		}
 	}
@@ -340,10 +404,21 @@ func (s *store) validatePayload(
 	key, digest []byte,
 	policy DurablePolicy,
 ) (int, error) {
+	return s.validatePayloadObserved(ctx, key, digest, policy, nil)
+}
+
+func (s *store) validatePayloadObserved(
+	ctx context.Context,
+	key, digest []byte,
+	policy DurablePolicy,
+	observer validationObserver,
+) (int, error) {
 	var codecLength, payloadLength, storedLength int
 	var codecType, payloadType string
 	err := s.conn.QueryRowContext(ctx, `SELECT typeof(codec), length(codec), typeof(payload),
- length(payload), payload_length FROM payloads WHERE id=?`, key).
+ length(payload),
+ CASE WHEN typeof(payload_length)='integer' THEN payload_length ELSE -1 END
+ FROM payloads WHERE id=?`, key).
 		Scan(&codecType, &codecLength, &payloadType, &payloadLength, &storedLength)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, corrupt("missing pending payload")
@@ -357,15 +432,129 @@ func (s *store) validatePayload(
 		storedLength != payloadLength {
 		return 0, corrupt("payload shape")
 	}
-	var codec, payload []byte
-	err = s.conn.QueryRowContext(ctx, "SELECT codec,payload FROM payloads WHERE id=?", key).
-		Scan(&codec, &payload)
-	if err != nil {
+	digestHash := newEntryDigest(uint64(codecLength))
+	if err := s.hashPayloadColumnObserved(
+		ctx,
+		key,
+		codecChunkQuery,
+		codecLength,
+		digestHash,
+		observer,
+	); err != nil {
 		return 0, err
 	}
-	actual := entryDigest(string(codec), payload)
+	writeDigestLength(digestHash, uint64(payloadLength))
+	if err := s.hashPayloadColumnObserved(
+		ctx,
+		key,
+		payloadChunkQuery,
+		payloadLength,
+		digestHash,
+		observer,
+	); err != nil {
+		return 0, err
+	}
+	var actual [32]byte
+	copy(actual[:], digestHash.Sum(nil))
 	if !bytes.Equal(actual[:], digest) {
 		return 0, corrupt("payload digest")
 	}
 	return payloadLength, nil
 }
+
+// validationObserver observes chunk lengths and Scan-destination BLOB capacities only.
+// Driver source copies and fixed hash state are covered separately by the layout ledger.
+// It never receives the buffer, so it cannot extend that buffer's lifetime.
+type validationObserver interface {
+	ObserveValidationChunk(query string, offset, transferred, scanDestinations int)
+}
+
+// The receipt and producer-floor projections stay live while its payload is hashed.
+// Include their Scan destinations without claiming to measure driver-owned buffers.
+type validationRecordObserver struct {
+	observer         validationObserver
+	scanDestinations int
+}
+
+func (o validationRecordObserver) ObserveValidationChunk(
+	query string,
+	offset, transferred, scanDestinations int,
+) {
+	if o.observer != nil {
+		o.observer.ObserveValidationChunk(
+			query,
+			offset,
+			transferred,
+			o.scanDestinations+scanDestinations,
+		)
+	}
+}
+
+const validationChunkBytes = 32 << 10
+
+const codecChunkQuery = "SELECT substr(codec,?,?) FROM payloads WHERE id=?"
+const payloadChunkQuery = "SELECT substr(payload,?,?) FROM payloads WHERE id=?"
+
+func validationCount(current Count, additional uint64, limit Count) (Count, error) {
+	if current > limit || additional > uint64(limit-current) {
+		return 0, corrupt("record count limit")
+	}
+	return Count(uint64(current) + additional), nil
+}
+
+func (s *store) hashPayloadColumn(
+	ctx context.Context,
+	key []byte,
+	query string,
+	length int,
+	digest hash.Hash,
+) error {
+	return s.hashPayloadColumnObserved(ctx, key, query, length, digest, nil)
+}
+
+func (s *store) hashPayloadColumnObserved(
+	ctx context.Context,
+	key []byte,
+	query string,
+	length int,
+	digest hash.Hash,
+	observer validationObserver,
+) error {
+	for offset := 0; offset < length; {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		size := min(validationChunkBytes, length-offset)
+		var chunk []byte
+		if err := s.conn.QueryRowContext(ctx, query, offset+1, size, key).Scan(&chunk); err != nil {
+			return err
+		}
+		if len(chunk) != size {
+			return corrupt("payload chunk length")
+		}
+		if observer != nil {
+			observer.ObserveValidationChunk(query, offset, len(chunk), cap(chunk))
+		}
+		// hash.Hash writes consume their input and never return an error.
+		_, _ = digest.Write(chunk)
+		offset += size
+	}
+	return ctx.Err()
+}
+
+const validationProducersQuery = `SELECT
+ CASE WHEN typeof(producer)='blob' AND length(producer)=16 THEN producer END,
+ CASE WHEN typeof(has_retirement)='integer' THEN has_retirement ELSE -1 END,
+ CASE WHEN typeof(retired_through)='blob' AND length(retired_through)=8
+ THEN retired_through END,
+ CASE WHEN typeof(cleanup_needed)='integer' THEN cleanup_needed ELSE -1 END
+ FROM producers ORDER BY producer`
+
+const validationReceiptsQuery = `SELECT
+ CASE WHEN typeof(id)='blob' AND length(id)=24 THEN id END,
+ CASE WHEN typeof(digest)='blob' AND length(digest)=32 THEN digest END,
+ CASE WHEN typeof(state)='integer' THEN state ELSE -1 END,
+ CASE WHEN typeof(accept_order)='blob' AND length(accept_order)=8 THEN accept_order END,
+ CASE WHEN ack_token IS NULL THEN NULL
+ WHEN typeof(ack_token)='blob' AND length(ack_token)=56 THEN ack_token ELSE x'00' END
+ FROM receipts ORDER BY id`

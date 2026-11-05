@@ -3,7 +3,6 @@ package durable
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -132,38 +131,26 @@ func openOffline(ctx context.Context, directory string) (result *validatedStore,
 	if err != nil {
 		return nil, err
 	}
-	// The recognized profile ceiling bounds discovery before stored limits are trusted.
-	policy := DurablePolicy{
-		Profile: profileSQLiteWALV1, MaxPayload: maxPayload, MaxCodec: maxCodec,
-		MaxPendingItems: 4096, MaxPendingPayload: 16 << 20,
-		MaxReceipts: 16384, MaxProducers: 256, DatabaseLimit: 1 << 30,
-	}
-	runtime, err := DefaultRuntime(policy)
-	if err != nil {
-		return nil, err
-	}
-	config := Config{Policy: policy, Runtime: runtime}
 	opened.storage, err = openStoreConnection(ctx, path, false)
 	if err != nil {
 		return nil, err
 	}
-	if err := opened.storage.configure(ctx, path, config, false); err != nil {
-		return nil, offlineConfigurationError(err)
+	if err := opened.storage.bootstrap(ctx, false); err != nil {
+		return nil, err
 	}
 	if err := verifyOwnedDescriptor(opened.main, path); err != nil {
 		return nil, err
 	}
 	started := time.Now()
-	if err := opened.storage.validateSchema(ctx); err != nil {
-		return nil, err
-	}
 	metadata, err := opened.storage.readMetadata(ctx)
 	if err != nil {
 		return nil, err
 	}
-	config.Policy = metadata.policy
-	if err := opened.storage.configure(ctx, path, config, false); err != nil {
-		return nil, offlineConfigurationError(err)
+	if err := opened.storage.validateSchemaForProfile(ctx, metadata.policy.Profile); err != nil {
+		return nil, err
+	}
+	if err := opened.storage.configurePolicy(ctx, path, metadata.policy); err != nil {
+		return nil, err
 	}
 	opened.validation.LogicalRecords, err = opened.storage.validateLogicalState(ctx, metadata)
 	if err != nil {
@@ -175,14 +162,6 @@ func openOffline(ctx context.Context, directory string) (result *validatedStore,
 		return nil, err
 	}
 	return opened, nil
-}
-
-func offlineConfigurationError(err error) error {
-	if !errors.Is(err, ErrConfigMismatch) {
-		return err
-	}
-	// configure uses this sentinel only for its own page/file limit checks.
-	return fmt.Errorf("stored database limits: %w: %v", ErrStorage, err)
 }
 
 func (s *validatedStore) offlineBarrier(ctx context.Context) error {

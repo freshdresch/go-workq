@@ -155,6 +155,15 @@ func (q *Queue) validateStoredSubmit(
 		if err != nil {
 			return storeMetadata{}, nil, err
 		}
+		counts, policy := metadata.counts, metadata.policy
+		if counts.PendingItems >= policy.MaxPendingItems ||
+			counts.Receipts >= policy.MaxReceipts ||
+			counts.PendingPayload > policy.MaxPendingPayload {
+			return storeMetadata{}, nil, ErrCapacity
+		}
+		if Bytes(len(entry.Payload)) > policy.MaxPendingPayload-counts.PendingPayload {
+			return storeMetadata{}, nil, ErrCapacity
+		}
 		metadata.counts.PendingItems++
 		metadata.counts.PendingPayload += Bytes(len(entry.Payload))
 		metadata.counts.Receipts++
@@ -173,6 +182,9 @@ func (q *Queue) validateStoredSubmit(
 				}
 			}
 			if !known {
+				if metadata.counts.Producers >= metadata.policy.MaxProducers {
+					return storeMetadata{}, nil, ErrCapacity
+				}
 				producers = append(producers, entry.ID.Producer)
 				metadata.counts.Producers++
 			}

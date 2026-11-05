@@ -34,26 +34,6 @@ type sqliteSettings struct {
 	AutomaticIndex int64
 }
 
-func connectStore(ctx context.Context, path string, config Config, create bool) (*store, error) {
-	if ctx == nil || path == "" {
-		return nil, ErrInvalidInput
-	}
-	if err := validateConfig(config); err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	storage, err := openStoreConnection(ctx, path, create)
-	if err != nil {
-		return nil, err
-	}
-	if err := storage.configure(ctx, path, config, create); err != nil {
-		return nil, errors.Join(err, classifySQLError(storage.close()))
-	}
-	return storage, nil
-}
-
 func openStoreConnection(ctx context.Context, path string, create bool) (*store, error) {
 	mode := "rw"
 	if create {
@@ -85,7 +65,22 @@ func (s *store) close() error {
 	return errors.Join(s.conn.Close(), s.db.Close())
 }
 
-func (s *store) configure(ctx context.Context, path string, config Config, create bool) error {
+func (s *store) configureExisting(
+	ctx context.Context,
+	path string,
+	config Config,
+	metadata storeMetadata,
+) error {
+	if metadata.policy != config.Policy || metadata.durability != config.Durability {
+		return ErrConfigMismatch
+	}
+	if err := s.configureTuning(ctx, config.Runtime.SQLite); err != nil {
+		return err
+	}
+	return s.configurePolicy(ctx, path, metadata.policy)
+}
+
+func (s *store) bootstrap(ctx context.Context, create bool) error {
 	if create {
 		for _, statement := range []string{
 			"PRAGMA page_size=4096", "PRAGMA auto_vacuum=INCREMENTAL",
@@ -102,7 +97,10 @@ func (s *store) configure(ctx context.Context, path string, config Config, creat
 	if journal != "wal" {
 		return fmt.Errorf("journal mode %q: %w", journal, ErrUnsupported)
 	}
-	tuning := config.Runtime.SQLite
+	return s.configureTuning(ctx, SQLiteConfig{Cache: 64 << 20, BusyTimeout: 5 * time.Second})
+}
+
+func (s *store) configureTuning(ctx context.Context, tuning SQLiteConfig) error {
 	settings := []struct {
 		name  string
 		value int64
@@ -113,7 +111,6 @@ func (s *store) configure(ctx context.Context, path string, config Config, creat
 		{"temp_store", 2},
 		{"wal_autocheckpoint", 0},
 		{"busy_timeout", int64(tuning.BusyTimeout / time.Millisecond)},
-		{"max_page_count", int64(config.Policy.DatabaseLimit / pageSize)},
 		{"automatic_index", 0},
 	}
 	for _, setting := range settings {
@@ -127,14 +124,10 @@ func (s *store) configure(ctx context.Context, path string, config Config, creat
 			return fmt.Errorf("read %s: %w", setting.name, classifySQLError(err))
 		}
 		if actual != setting.value {
-			if setting.name == "max_page_count" && actual > setting.value {
-				return fmt.Errorf(
-					"existing database exceeds requested main limit (%d pages > %d): %w",
-					actual, setting.value, ErrConfigMismatch,
-				)
-			}
-			return fmt.Errorf("%s=%d, requested %d: %w",
-				setting.name, actual, setting.value, ErrUnsupported)
+			return fmt.Errorf(
+				"%s=%d, requested %d: %w",
+				setting.name, actual, setting.value, ErrUnsupported,
+			)
 		}
 	}
 	actual, err := s.readSettings(ctx)
@@ -144,6 +137,25 @@ func (s *store) configure(ctx context.Context, path string, config Config, creat
 	if actual.AutoVacuum != 2 || actual.PageSize != int64(pageSize) {
 		return fmt.Errorf("database page format: %w", ErrUnsupported)
 	}
+	return nil
+}
+
+func (s *store) configurePolicy(ctx context.Context, path string, policy DurablePolicy) error {
+	if err := s.validateBackendRowLimit(policy); err != nil {
+		return err
+	}
+	requested := int64(policy.DatabaseLimit / pageSize)
+	var actual int64
+	statement := "PRAGMA max_page_count=" + strconv.FormatInt(requested, 10)
+	if err := s.conn.QueryRowContext(ctx, statement).Scan(&actual); err != nil {
+		return classifySQLError(err)
+	}
+	if actual > requested {
+		return corrupt("database exceeds stored page limit")
+	}
+	if actual != requested {
+		return ErrUnsupported
+	}
 	var pages int64
 	if err := s.conn.QueryRowContext(ctx, "PRAGMA page_count").Scan(&pages); err != nil {
 		return fmt.Errorf("read page count: %w", classifySQLError(err))
@@ -152,8 +164,11 @@ func (s *store) configure(ctx context.Context, path string, config Config, creat
 	if err != nil {
 		return fmt.Errorf("database size: %w: %w", ErrStorage, err)
 	}
-	if pages > actual.MaxPageCount || uint64(info.Size()) > uint64(config.Policy.DatabaseLimit) {
-		return fmt.Errorf("database exceeds main limit: %w", ErrConfigMismatch)
+	if pages < 0 || pages > actual {
+		return corrupt("database exceeds stored page limit")
+	}
+	if info.Size() < 0 || uint64(info.Size()) > uint64(policy.DatabaseLimit) {
+		return corrupt("database exceeds stored main limit")
 	}
 	return nil
 }
@@ -209,4 +224,22 @@ func classifySQLError(err error) error {
 		return err
 	}
 	return errors.Join(ErrStorage, err)
+}
+
+func (s *store) validateBackendRowLimit(policy DurablePolicy) error {
+	row, err := payloadRowLimit(policy)
+	if err != nil {
+		return err
+	}
+	return s.conn.Raw(func(raw any) error {
+		connection, ok := raw.(*sqlite3.SQLiteConn)
+		if !ok {
+			return ErrUnsupported
+		}
+		limit := connection.GetLimit(sqlite3.SQLITE_LIMIT_LENGTH)
+		if limit < 0 || row > Bytes(limit) {
+			return fmt.Errorf("effective SQLite record length %d: %w", limit, ErrUnsupported)
+		}
+		return nil
+	})
 }

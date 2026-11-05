@@ -153,15 +153,57 @@ func (q *Queue) drainedLocked() bool {
 // sourceBufferCharge bounds the supported toolchain's noscan byte allocations.
 // Small classes fit A(size), and all classes fit the next 8192-byte page boundary.
 // RawBytes avoids database/sql's otherwise additional scan copy.
-func sourceBufferCharge(size Bytes) Bytes {
-	allowance, _ := allocationCharge(size)
-	return min(allowance, (size+8191)&^8191)
+func sourceBufferCharge(size Bytes) (Bytes, error) {
+	allowance, err := allocationCharge(size)
+	if err != nil {
+		return 0, err
+	}
+	pages, err := checkedAdd(size, 8191)
+	if err != nil {
+		return 0, err
+	}
+	return min(allowance, pages&^8191), nil
 }
 
-func deliveryScratchCharge(payload, codec Bytes) Bytes {
+func deliveryScratchCharge(payload, codec Bytes) (Bytes, error) {
+	payloadCharge, err := sourceBufferCharge(payload)
+	if err != nil {
+		return 0, err
+	}
+	codecCharge, err := sourceBufferCharge(codec)
+	if err != nil {
+		return 0, err
+	}
+	conversion, err := checkedMultiply(codec, 2)
+	if err != nil {
+		return 0, err
+	}
 	// 1024 covers keys, digest, scan destinations and length/hash scalar scratch.
 	// The codec conversion used for hashing can coexist with the source codec.
-	return sourceBufferCharge(payload) + sourceBufferCharge(codec) + 2*codec + 1024
+	charge := Bytes(1024)
+	for _, allowance := range []Bytes{payloadCharge, codecCharge, conversion} {
+		charge, err = checkedAdd(charge, allowance)
+		if err != nil {
+			return 0, err
+		}
+	}
+	return charge, nil
+}
+
+func deliveryCharge(payload, codec Bytes) (Bytes, error) {
+	payloadCharge, err := allocationCharge(payload)
+	if err != nil {
+		return 0, err
+	}
+	codecCharge, err := allocationCharge(codec)
+	if err != nil {
+		return 0, err
+	}
+	charge, err := checkedAdd(payloadCharge, codecCharge)
+	if err != nil {
+		return 0, err
+	}
+	return checkedAdd(charge, 256)
 }
 
 func (q *Queue) dispatch(ctx context.Context) error {
@@ -212,8 +254,7 @@ func (q *Queue) dispatch(ctx context.Context) error {
 
 func (q *Queue) nextDeliveryID(ctx context.Context) (ID, bool, error) {
 	var order, encoded []byte
-	err := q.opened.storage.conn.QueryRowContext(ctx, `SELECT accept_order,id FROM receipts
- WHERE state=0 AND (accept_order,id)>(?,?) ORDER BY accept_order,id LIMIT 1`,
+	err := q.opened.storage.conn.QueryRowContext(ctx, deliveryKeyQuery,
 		q.scanOrder[:], q.scanID[:]).Scan(&order, &encoded)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ID{}, true, nil
@@ -247,13 +288,17 @@ func (q *Queue) loadDelivery(ctx context.Context, index int, id ID) error {
 		Bytes(codecLength) > q.config.Policy.MaxCodec {
 		return ErrStorage
 	}
-	if deliveryScratchCharge(Bytes(payloadLength), Bytes(codecLength)) >
-		q.config.Runtime.Delivery.ReadScratch {
+	scratch, err := deliveryScratchCharge(Bytes(payloadLength), Bytes(codecLength))
+	if err != nil {
+		return errors.Join(ErrStorage, err)
+	}
+	if scratch > q.config.Runtime.Delivery.ReadScratch {
 		return ErrStorage
 	}
-	payloadCharge, _ := allocationCharge(Bytes(payloadLength))
-	codecCharge, _ := allocationCharge(Bytes(codecLength))
-	charge := payloadCharge + codecCharge + 256
+	charge, err := deliveryCharge(Bytes(payloadLength), Bytes(codecLength))
+	if err != nil {
+		return errors.Join(ErrStorage, err)
+	}
 	q.mu.Lock()
 	if q.deliveryStopped {
 		q.mu.Unlock()
@@ -334,3 +379,6 @@ func (q *Queue) readDelivery(
 	}
 	return delivery, nil
 }
+
+const deliveryKeyQuery = `SELECT accept_order,id FROM receipts
+ WHERE state=0 AND (accept_order,id)>(?,?) ORDER BY accept_order,id LIMIT 1`
